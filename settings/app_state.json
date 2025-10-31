@@ -1,12 +1,12 @@
 {
-    "geometry": "AdnQywADAAAAAAABAAAAAQAAB34AAAQGAAAAAQAAACAAAAd+AAAEBgAAAAAAAAAAB4AAAAABAAAAIAAAB34AAAQG",
+    "geometry": "AdnQywADAAAAAAAA////+AAAB38AAAQHAAAAAQAAACAAAAd+AAAEBgAAAAACAAAAB4AAAAAAAAAAFwAAB38AAAQH",
     "videos": [
         [
             "https://www.youtube.com/embed/iipR5yUp36o?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
             "ABC News"
         ],
         [
-            "https://www.youtube.com/embed/TjJEfzPATlQ?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+            "https://www.youtube.com/watch?v=5ekn4ZtzRYc",
             "CBS News"
         ],
         [
@@ -18,8 +18,20 @@
             "Times Square"
         ],
         [
-            "https://www.youtube.com/embed/YjwC6YYKu44?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+            "https://www.youtube.com/watch?v=3n-obi4XZR8",
             "NBC Now"
+        ],
+        [
+            "https://www.youtube.com/watch?v=MnyjqGMkzmw",
+            "Allegiant Stadium"
+        ],
+        [
+            "https://www.youtube.com/watch?v=Zg1qEHQP-A4",
+            "Fort Meyers, FL"
+        ],
+        [
+            "https://www.youtube.com/watch?v=a3ismwtMznk",
+            "Associated Press"
         ]
     ]
 }

@@ -21,19 +21,7 @@ from urllib.parse import urlparse, parse_qsl
 from collections import deque
 from typing import Optional
 
-from PyQt6.QtCore import (
-    Qt,
-    QUrl,
-    QByteArray,
-    QTimer,
-    QSize,
-    QEvent,
-    QObject,
-    pyqtSignal,
-    QRunnable,
-    QThreadPool,
-    pyqtSlot,
-)
+from PyQt6.QtCore import Qt, QUrl, QByteArray, QTimer, QSize, QEvent
 from PyQt6.QtGui import QKeySequence, QShortcut, QAction
 from PyQt6.QtWidgets import (
     QApplication,
@@ -156,26 +144,6 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
     return None
 
 
-class WorkerSignals(QObject):
-    finished = pyqtSignal(str)
-
-
-class UrlResolverWorker(QRunnable):
-    def __init__(self, url):
-        super().__init__()
-        self.url = url
-        self.signals = WorkerSignals()
-
-    @pyqtSlot()
-    def run(self):
-        src = build_embed_or_watch(self.url)
-        if _is_youtube_url(src):
-            direct = resolve_youtube_to_direct(src)
-            if direct:
-                src = direct
-        self.signals.finished.emit(src)
-
-
 # ------------- VLC tile -------------
 
 
@@ -265,13 +233,12 @@ class VlcTile(QFrame):
             self.player.set_xwindow(wid)
 
     def play_url(self, url: str):
-        threadpool = QThreadPool.globalInstance()
-        worker = UrlResolverWorker(url)
-        worker.signals.finished.connect(self._play_media_from_url)
-        threadpool.start(worker)
-
-    def _play_media_from_url(self, url: str):
-        media = self.instance.media_new(url)
+        src = build_embed_or_watch(url)
+        if _is_youtube_url(src):
+            direct = resolve_youtube_to_direct(src)
+            if direct:
+                src = direct
+        media = self.instance.media_new(src)
         self.player.set_media(media)
         self._attach_output()
         self.player.play()
