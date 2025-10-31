@@ -1,0 +1,25 @@
+{
+    "geometry": "AdnQywADAAAAAAABAAAAAQAAB34AAAQGAAAAAQAAACAAAAd+AAAEBgAAAAAAAAAAB4AAAAABAAAAIAAAB34AAAQG",
+    "videos": [
+        [
+            "https://www.youtube.com/embed/iipR5yUp36o?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+            "ABC News"
+        ],
+        [
+            "https://www.youtube.com/embed/TjJEfzPATlQ?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+            "CBS News"
+        ],
+        [
+            "https://www.youtube.com/embed/4nMfRpesYfw?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+            "FoxNews"
+        ],
+        [
+            "https://www.youtube.com/embed/rnXIjl_Rzy4?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+            "Times Square"
+        ],
+        [
+            "https://www.youtube.com/embed/YjwC6YYKu44?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+            "NBC Now"
+        ]
+    ]
+}
