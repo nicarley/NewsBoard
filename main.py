@@ -148,13 +148,13 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
 
 
 class VlcTile(QFrame):
-    def __init__(self, url: str, title: str, parent=None):
+    def __init__(self, vlc_instance, url: str, title: str, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.url = url
         self.title = title or "Video"
 
-        self.instance = vlc.Instance()
+        self.instance = vlc_instance
         self.player = self.instance.media_player_new()
 
         self.canvas = QWidget(self)
@@ -396,6 +396,7 @@ class NewsBoardVLC(QMainWindow):
         super().__init__()
         self.setWindowTitle("News Board")
         self.setBaseSize(1280, 720)
+        self.vlc_instance = vlc.Instance()
 
         self.central_widget = QWidget()
         the_layout = QGridLayout(self.central_widget)
@@ -694,7 +695,7 @@ class NewsBoardVLC(QMainWindow):
         self.create_video_widget(url, title)
 
     def create_video_widget(self, url, title):
-        vw = VlcTile(url, title, parent=self)
+        vw = VlcTile(self.vlc_instance, url, title, parent=self)
         vw.remove_button.clicked.connect(lambda: self.remove_video_widget(vw))
         self.video_widgets.append(vw)
         self.update_grid()
@@ -761,6 +762,7 @@ class NewsBoardVLC(QMainWindow):
 
 
 # ------------- Entry point -------------
+
 
 def main():
     app = QApplication(sys.argv)
