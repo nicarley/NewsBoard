@@ -32,6 +32,10 @@
         [
             "https://www.youtube.com/@ABCNews/live",
             "ABC News"
+        ],
+        [
+            "https://www.youtube.com/@MoreMaxVelocity/live",
+            "More Max Velocity"
         ]
     ],
     "active_volume": 100
