@@ -2,7 +2,7 @@
 
 A desktop application for viewing multiple video streams simultaneously, designed for news junkies and information enthusiasts.
 
-## Features
+<img src="https://raw.githubusercontent.com/nicarley/NewsBoard/refs/heads/master/resources/screenshot.png" />
 
 *   **Multi-source viewing:** Watch video streams from various sources like YouTube and other direct stream URLs.
 *   **Grid layout:** Arrange multiple video tiles in a grid for a comprehensive overview.
