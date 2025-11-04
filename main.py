@@ -120,6 +120,8 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
             "best[acodec!=none]/"
             "best"
         ),
+        "nocookie": True,
+        "cachedir": False,
     }
     try:
         with YoutubeDL(ydl_opts) as ydl:
