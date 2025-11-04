@@ -764,8 +764,12 @@ class NewsBoardVLC(QMainWindow):
 
     def remove_all_videos(self):
         self.currently_unmuted = None
-        for w in list(self.video_widgets):
-            self.remove_video_widget(w)
+        while self.video_widgets:
+            w = self.video_widgets.pop(0)
+            w.stop()
+            w.deleteLater()
+        self.update_grid()
+        self._enforce_audio_policy_with_retries()
 
     def update_grid(self):
         widgets_in_layout = set()
