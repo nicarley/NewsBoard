@@ -5,7 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="791dd242-94c7-4d4b-b3fe-8507e0b4c7b3" name="Changes" comment="2025.11.04">
-      <change beforePath="$PROJECT_DIR$/resources/settings/news_feeds.json" beforeDir="false" afterPath="$PROJECT_DIR$/resources/settings/news_feeds.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -139,7 +139,23 @@
       <option name="project" value="LOCAL" />
       <updated>1762274237278</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="2025.11.04">
+      <option name="closed" value="true" />
+      <created>1762274827621</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1762274827621</updated>
+    </task>
+    <task id="LOCAL-00009" summary="2025.11.04">
+      <option name="closed" value="true" />
+      <created>1762274830585</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1762274830585</updated>
+    </task>
+    <option name="localTasksCounter" value="10" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">

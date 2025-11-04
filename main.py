@@ -167,6 +167,7 @@ class QtTile(QFrame):
     # Signals so the controller always receives actions regardless of Qt parenting
     requestToggle = pyqtSignal(object)   # emits self when user clicks the mute button
     started = pyqtSignal(object)         # emits self when playback changes or starts
+    requestFullscreen = pyqtSignal(object)
 
     def __init__(self, url: str, title: str, parent=None, muted: bool = True):
         super().__init__(parent)
@@ -174,6 +175,7 @@ class QtTile(QFrame):
         self.url = url
         self.title = title or "Video"
         self.is_muted = muted
+        self.is_fullscreen_tile = False
 
 
         outer = QVBoxLayout(self)
@@ -198,6 +200,9 @@ class QtTile(QFrame):
         self.mute_button.setToolTip("Mute or unmute audio for this tile")
         self.mute_button.setFixedSize(24, 24)
 
+        self.fullscreen_button = QPushButton("", controls)
+        self.fullscreen_button.setFixedSize(24, 24)
+
         self.remove_button = QPushButton("", controls)
         self.remove_button.setToolTip("Remove video")
         self.remove_button.setFixedSize(24, 24)
@@ -205,6 +210,7 @@ class QtTile(QFrame):
         row.addWidget(self.label)
         row.addStretch()
         row.addWidget(self.mute_button)
+        row.addWidget(self.fullscreen_button)
         row.addWidget(self.remove_button)
         outer.addWidget(controls, 0)
 
@@ -226,6 +232,7 @@ class QtTile(QFrame):
 
         # important: signal to controller rather than calling parent
         self.mute_button.clicked.connect(lambda: self.requestToggle.emit(self))
+        self.fullscreen_button.clicked.connect(lambda: self.requestFullscreen.emit(self))
 
         # start playback
         self.play_url(self.url)
@@ -279,6 +286,10 @@ class QtTile(QFrame):
     def set_audio_for_active(self, volume_percent: int):
         self.make_active(volume_percent)
 
+    def set_is_fullscreen(self, is_fullscreen: bool):
+        self.is_fullscreen_tile = is_fullscreen
+        self._refresh_icons()
+
     # ---------- UI ----------
     def _refresh_icons(self):
         style = self.style()
@@ -286,6 +297,12 @@ class QtTile(QFrame):
             style.standardIcon(QStyle.StandardPixmap.SP_MediaVolumeMuted if self.is_muted
                                else QStyle.StandardPixmap.SP_MediaVolume)
         )
+        if self.is_fullscreen_tile:
+            self.fullscreen_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
+            self.fullscreen_button.setToolTip("Exit Fullscreen")
+        else:
+            self.fullscreen_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton))
+            self.fullscreen_button.setToolTip("Enter Fullscreen")
         self.remove_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
 
     def stop(self):
@@ -442,6 +459,8 @@ class NewsBoardVLC(QMainWindow):
         self.active_volume: int = 85
         self.allow_auto_select: bool = True
         self._audio_enforce_generation = 0
+        self.fullscreen_tile: Optional[QtTile] = None
+        self.main_toolbar: Optional[QToolBar] = None
 
         self.list_manager = ListManager(self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.list_manager)
@@ -487,6 +506,7 @@ class NewsBoardVLC(QMainWindow):
 
     def _build_top_toolbar(self):
         tb = QToolBar("Main")
+        self.main_toolbar = tb
         tb.setMovable(False)
         tb.setFloatable(False)
         sz = self.style().pixelMetric(QStyle.PixelMetric.PM_SmallIconSize)
@@ -713,6 +733,7 @@ class NewsBoardVLC(QMainWindow):
         # connect tile signals
         vw.requestToggle.connect(self.toggle_mute_single)
         vw.started.connect(self.on_tile_playing)
+        vw.requestFullscreen.connect(self.toggle_fullscreen_tile)
 
         vw.remove_button.clicked.connect(lambda: self.remove_video_widget(vw))
         self.video_widgets.append(vw)
@@ -814,6 +835,45 @@ class NewsBoardVLC(QMainWindow):
         self.active_volume = int(value)
         self.volume_label.setText(f"Volume {self.active_volume}")
         self._enforce_audio_policy_with_retries()
+
+    def toggle_fullscreen_tile(self, tile: QtTile):
+        if self.isFullScreen():
+            if self.fullscreen_tile == tile:
+                self.exit_fullscreen()
+            else:
+                if self.fullscreen_tile:
+                    self.fullscreen_tile.set_is_fullscreen(False)
+                for w in self.video_widgets:
+                    w.setVisible(w is tile)
+                self.fullscreen_tile = tile
+                self.fullscreen_tile.set_is_fullscreen(True)
+        else:
+            self.fullscreen_tile = tile
+            self.fullscreen_tile.set_is_fullscreen(True)
+            if self.main_toolbar:
+                self.main_toolbar.hide()
+            self.list_manager.hide()
+            for w in self.video_widgets:
+                w.setVisible(w is tile)
+            self.showFullScreen()
+
+    def exit_fullscreen(self):
+        if self.fullscreen_tile:
+            self.fullscreen_tile.set_is_fullscreen(False)
+            self.fullscreen_tile = None
+
+        if self.main_toolbar:
+            self.main_toolbar.show()
+        self.list_manager.show()
+        for w in self.video_widgets:
+            w.show()
+        self.showNormal()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.exit_fullscreen()
+        else:
+            super().keyPressEvent(event)
 
 # ---------------- Entry point ----------------
 
