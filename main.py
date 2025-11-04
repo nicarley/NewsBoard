@@ -146,7 +146,6 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
 
 class YtResolveWorker(QObject):
     resolved = pyqtSignal(str)
-    failed = pyqtSignal(str)
 
     def __init__(self, url: str, parent=None):
         super().__init__(parent)
@@ -157,8 +156,6 @@ class YtResolveWorker(QObject):
             direct = resolve_youtube_to_direct(self.url)
             if direct:
                 self.resolved.emit(direct)
-            else:
-                self.failed.emit("Could not resolve YouTube to a direct stream")
         t = threading.Thread(target=run, daemon=True)
         t.start()
 
@@ -235,14 +232,10 @@ class QtTile(QFrame):
         src = build_embed_or_watch(url)
         if _is_youtube_url(src):
             if YT_AVAILABLE:
-                self.label.setText(f"{self.title}  Resolving…")
                 self._yt_worker = YtResolveWorker(src, self)
                 self._yt_worker.resolved.connect(lambda direct: self._apply_source(QUrl(direct)))
-                self._yt_worker.failed.connect(lambda _msg: self.label.setText(f"{self.title}  YouTube resolve failed"))
                 self._yt_worker.start()
                 return
-            else:
-                self.label.setText(f"{self.title}  yt_dlp not installed")
         self._apply_source(QUrl(src))
 
     def _apply_source(self, qurl: QUrl):
