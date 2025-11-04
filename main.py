@@ -2,6 +2,7 @@ import sys
 import re
 import json
 import math
+import os
 import threading
 from pathlib import Path
 from urllib.parse import urlparse, parse_qsl
@@ -69,6 +70,16 @@ YOUTUBE_HOSTS = (
 
 # ---------------- URL helpers ----------------
 
+class SilentLogger:
+    def debug(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        pass
+
 def _is_youtube_url(u: str) -> bool:
     try:
         netloc = urlparse(u).netloc.lower()
@@ -123,6 +134,7 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
         ),
         "nocookie": True,
         "cachedir": False,
+        "logger": SilentLogger(),
     }
     try:
         with YoutubeDL(ydl_opts) as ydl:
@@ -981,6 +993,8 @@ class NewsBoardVLC(QMainWindow):
 # ---------------- Entry point ----------------
 
 def main():
+    sys.stdout = open(os.devnull, 'w')
+    sys.stderr = open(os.devnull, 'w')
     app = QApplication(sys.argv)
     win = NewsBoardVLC()
     win.show()
