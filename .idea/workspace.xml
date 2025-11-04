@@ -5,92 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="791dd242-94c7-4d4b-b3fe-8507e0b4c7b3" name="Changes" comment="2025.11.04">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/resources/settings/news_feeds.json" beforeDir="false" afterPath="$PROJECT_DIR$/resources/settings/news_feeds.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/qt_log.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Cookies" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Cookies-journal" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnGraphiteCache/data_0" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnGraphiteCache/data_1" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnGraphiteCache/data_2" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnGraphiteCache/data_3" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnGraphiteCache/index" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnWebGPUCache/data_0" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnWebGPUCache/data_1" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnWebGPUCache/data_2" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnWebGPUCache/data_3" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/DawnWebGPUCache/index" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Favicons" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Favicons-journal" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/GPUCache/data_0" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/GPUCache/data_1" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/GPUCache/data_2" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/GPUCache/data_3" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/GPUCache/index" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/History" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/History-journal" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Local Storage/leveldb/000003.log" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Local Storage/leveldb/CURRENT" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Local Storage/leveldb/LOCK" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Local Storage/leveldb/LOG" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Local Storage/leveldb/MANIFEST-000001" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Network Persistent State" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Session Storage/000003.log" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Session Storage/CURRENT" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Session Storage/LOCK" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Session Storage/LOG" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Session Storage/MANIFEST-000001" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Shared Dictionary/cache/index" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Shared Dictionary/cache/index-dir/the-real-index" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Shared Dictionary/db" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Shared Dictionary/db-journal" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/TransportSecurity" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Trust Tokens" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Trust Tokens-journal" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/VideoDecodeStats/LOCK" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/VideoDecodeStats/LOG" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/Visited Links" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/WebStorage/1/CacheStorage/index.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/WebStorage/1/IndexedDB/indexeddb.leveldb/000003.log" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/WebStorage/1/IndexedDB/indexeddb.leveldb/CURRENT" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/WebStorage/1/IndexedDB/indexeddb.leveldb/LOCK" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/WebStorage/1/IndexedDB/indexeddb.leveldb/LOG" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/WebStorage/1/IndexedDB/indexeddb.leveldb/MANIFEST-000001" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/WebStorage/QuotaManager" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/WebStorage/QuotaManager-journal" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/data_0" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/data_1" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/data_2" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/data_3" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000001" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000002" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000003" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000004" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000005" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000006" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000007" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000008" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000009" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_00000a" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_00000b" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_00000c" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_00000d" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_00000e" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_00000f" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/f_000010" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/http_cache/Cache/Cache_Data/index" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/000003.log" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/CURRENT" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/LOCK" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/LOG" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/MANIFEST-000001" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/metadata/000003.log" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/metadata/CURRENT" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/metadata/LOCK" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/metadata/LOG" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/shared_proto_db/metadata/MANIFEST-000001" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/settings/web_engine_storage/user_prefs.json" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -216,7 +131,15 @@
       <option name="project" value="LOCAL" />
       <updated>1762273325257</updated>
     </task>
-    <option name="localTasksCounter" value="7" />
+    <task id="LOCAL-00007" summary="2025.11.04">
+      <option name="closed" value="true" />
+      <created>1762274237278</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1762274237278</updated>
+    </task>
+    <option name="localTasksCounter" value="8" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
