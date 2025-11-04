@@ -15,6 +15,7 @@ from PyQt6.QtCore import (
     QSize,
     QObject,
     pyqtSignal,
+    QUrl,
 )
 from PyQt6.QtGui import QKeySequence, QShortcut, QIcon
 from PyQt6.QtWidgets import (
@@ -46,7 +47,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
-version="2025.11.04"
+version = "2025.11.04"
 
 try:
     from yt_dlp import YoutubeDL
@@ -164,9 +165,8 @@ class YtResolveWorker(QObject):
 # ---------------- Qt Multimedia tile ----------------
 
 class QtTile(QFrame):
-    # Signals so the controller always receives actions regardless of Qt parenting
-    requestToggle = pyqtSignal(object)   # emits self when user clicks the mute button
-    started = pyqtSignal(object)         # emits self when playback changes or starts
+    requestToggle = pyqtSignal(object)
+    started = pyqtSignal(object)
     requestFullscreen = pyqtSignal(object)
 
     def __init__(self, url: str, title: str, parent=None, muted: bool = True):
@@ -176,7 +176,6 @@ class QtTile(QFrame):
         self.title = title or "Video"
         self.is_muted = muted
         self.is_fullscreen_tile = False
-
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -188,7 +187,7 @@ class QtTile(QFrame):
 
         controls = QWidget(self)
         controls.setObjectName("controls")
-        controls.setStyleSheet("#controls { background: rgba(0,0,0,0.55); } QLabel { color: white; }")
+        controls.setStyleSheet("#controls { background: black } QLabel { color: white; }")
         row = QHBoxLayout(controls)
         row.setContentsMargins(6, 4, 6, 4)
         row.setSpacing(6)
@@ -214,32 +213,25 @@ class QtTile(QFrame):
         row.addWidget(self.remove_button)
         outer.addWidget(controls, 0)
 
-        # media setup
         self.audio = QAudioOutput(self)
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video_widget.videoSink())
 
-        # initial audio state
         self.audio.setMuted(self.is_muted)
         self.audio.setVolume(0.0 if self.is_muted else 0.85)
 
-        # state hooks
         self.player.playbackStateChanged.connect(lambda *_: self.started.emit(self))
         self.player.mediaStatusChanged.connect(lambda *_: self.started.emit(self))
 
         self._refresh_icons()
 
-        # important: signal to controller rather than calling parent
         self.mute_button.clicked.connect(lambda: self.requestToggle.emit(self))
         self.fullscreen_button.clicked.connect(lambda: self.requestFullscreen.emit(self))
 
-        # start playback
         self.play_url(self.url)
 
-    # ---------- Playback ----------
     def play_url(self, url: str):
-        from PyQt6.QtCore import QUrl
         src = build_embed_or_watch(url)
         if _is_youtube_url(src):
             if YT_AVAILABLE:
@@ -251,16 +243,14 @@ class QtTile(QFrame):
                 return
             else:
                 self.label.setText(f"{self.title}  yt_dlp not installed")
-        # direct
         self._apply_source(QUrl(src))
 
-    def _apply_source(self, qurl):
+    def _apply_source(self, qurl: QUrl):
         self.player.setSource(qurl)
         self.player.play()
         self.label.setText(self.title)
         QTimer.singleShot(0, lambda: self.started.emit(self))
 
-    # ---------- Audio control ----------
     def hard_mute(self):
         self.audio.setMuted(True)
         self.audio.setVolume(0.0)
@@ -274,7 +264,6 @@ class QtTile(QFrame):
         self.is_muted = False
         self._refresh_icons()
 
-    # API used by controller
     def set_mute_state(self, muted: bool):
         if muted:
             self.hard_mute()
@@ -290,7 +279,6 @@ class QtTile(QFrame):
         self.is_fullscreen_tile = is_fullscreen
         self._refresh_icons()
 
-    # ---------- UI ----------
     def _refresh_icons(self):
         style = self.style()
         self.mute_button.setIcon(
@@ -306,8 +294,41 @@ class QtTile(QFrame):
         self.remove_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
 
     def stop(self):
+        # disconnect tile local hookups
+        for fn in (
+            lambda: self.player.playbackStateChanged.disconnect(),
+            lambda: self.player.mediaStatusChanged.disconnect(),
+            lambda: self.mute_button.clicked.disconnect(),
+            lambda: self.fullscreen_button.clicked.disconnect(),
+            lambda: self.remove_button.clicked.disconnect(),
+        ):
+            try:
+                fn()
+            except Exception:
+                pass
+
         try:
             self.player.stop()
+        except Exception:
+            pass
+        try:
+            self.player.setVideoOutput(None)
+        except Exception:
+            pass
+        try:
+            self.player.setAudioOutput(None)
+        except Exception:
+            pass
+        try:
+            self.player.setSource(QUrl())
+        except Exception:
+            pass
+        try:
+            self.audio.deleteLater()
+        except Exception:
+            pass
+        try:
+            self.player.deleteLater()
         except Exception:
             pass
 
@@ -435,7 +456,7 @@ class ListManager(QDockWidget):
         self.grid_layout.addWidget(self.grid_list_widget, 1)
         self.tabs.addTab(self.grid_tab, "Grid")
 
-# ---------------- Main window with single speaker policy ----------------
+# ---------------- Main window ----------------
 
 class NewsBoardVLC(QMainWindow):
     AUDIO_RETRY_COUNT = 6
@@ -461,6 +482,9 @@ class NewsBoardVLC(QMainWindow):
         self._audio_enforce_generation = 0
         self.fullscreen_tile: Optional[QtTile] = None
         self.main_toolbar: Optional[QToolBar] = None
+
+        # new guard for teardown
+        self._is_clearing = False
 
         self.list_manager = ListManager(self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.list_manager)
@@ -494,7 +518,7 @@ class NewsBoardVLC(QMainWindow):
         self.volume_label.setText(f"Volume {self.active_volume}")
         self.volume_slider.blockSignals(False)
 
-    # Actions from grid tab
+    # grid actions
     def remove_video_from_grid_list(self):
         items = self.list_manager.grid_list_widget.selectedItems()
         if not items:
@@ -573,7 +597,7 @@ class NewsBoardVLC(QMainWindow):
         self.shortcut_add_all_feeds = QShortcut(QKeySequence("Ctrl+Shift+A"), self)
         self.shortcut_add_all_feeds.activated.connect(self.add_all_feeds)
 
-    # ---------------- State ----------------
+    # state
     def save_state(self):
         SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
         state = {
@@ -600,10 +624,21 @@ class NewsBoardVLC(QMainWindow):
             pass
 
     def closeEvent(self, event):
+        # clean shutdown
+        self._is_clearing = True
+        try:
+            self._queue_timer.stop()
+        except Exception:
+            pass
+        try:
+            for w in self.video_widgets[:]:
+                w.stop()
+        except Exception:
+            pass
         self.save_state()
         super().closeEvent(event)
 
-    # ---------------- Feeds ----------------
+    # feeds
     def load_news_feeds(self):
         SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
         try:
@@ -713,7 +748,7 @@ class NewsBoardVLC(QMainWindow):
         self.news_feeds = new_news_feeds
         self.save_news_feeds()
 
-    # ---------------- Queue and grid ----------------
+    # queue and grid
     def _enqueue(self, url, title):
         self._queue.append((url, title))
         if not self._queue_timer.isActive():
@@ -730,12 +765,11 @@ class NewsBoardVLC(QMainWindow):
         is_first_video = not bool(self.video_widgets)
         vw = QtTile(url, title, parent=self.central_widget, muted=not is_first_video)
 
-        # connect tile signals
         vw.requestToggle.connect(self.toggle_mute_single)
         vw.started.connect(self.on_tile_playing)
         vw.requestFullscreen.connect(self.toggle_fullscreen_tile)
-
         vw.remove_button.clicked.connect(lambda: self.remove_video_widget(vw))
+
         self.video_widgets.append(vw)
 
         if is_first_video:
@@ -746,13 +780,39 @@ class NewsBoardVLC(QMainWindow):
         self._enforce_audio_policy_with_retries()
 
     def remove_video_widget(self, widget):
+        if self._is_clearing:
+            return
+
+        if self.fullscreen_tile is widget and self.isFullScreen():
+            self.exit_fullscreen()
+
         if widget in self.video_widgets:
             was_unmuted = widget == self.currently_unmuted
             if was_unmuted:
                 self.currently_unmuted = None
 
-            self.video_widgets.remove(widget)
-            widget.stop()
+            # disconnect controller side hookups
+            for fn in (
+                lambda: widget.requestToggle.disconnect(),
+                lambda: widget.started.disconnect(),
+                lambda: widget.requestFullscreen.disconnect(),
+            ):
+                try:
+                    fn()
+                except Exception:
+                    pass
+
+            try:
+                widget.stop()
+            except Exception:
+                pass
+
+            try:
+                self.video_widgets.remove(widget)
+            except Exception:
+                pass
+
+            widget.setParent(None)
             widget.deleteLater()
 
             if was_unmuted and self.video_widgets:
@@ -763,13 +823,51 @@ class NewsBoardVLC(QMainWindow):
             self._enforce_audio_policy_with_retries()
 
     def remove_all_videos(self):
+        if self.isFullScreen():
+            self.exit_fullscreen()
+
+        self._is_clearing = True
+
+        try:
+            self._queue_timer.stop()
+        except Exception:
+            pass
+        self._queue.clear()
+
         self.currently_unmuted = None
-        while self.video_widgets:
-            w = self.video_widgets.pop(0)
-            w.stop()
+
+        for w in self.video_widgets[:]:
+            # disconnect controller side first
+            for fn in (
+                lambda: w.requestToggle.disconnect(),
+                lambda: w.started.disconnect(),
+                lambda: w.requestFullscreen.disconnect(),
+                lambda: w.remove_button.clicked.disconnect(),
+            ):
+                try:
+                    fn()
+                except Exception:
+                    pass
+            try:
+                w.stop()
+            except Exception:
+                pass
+            w.setParent(None)
             w.deleteLater()
-        self.update_grid()
-        self._enforce_audio_policy_with_retries()
+
+        self.video_widgets.clear()
+
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            wid = item.widget()
+            if wid is not None:
+                wid.setParent(None)
+
+        self.list_manager.grid_list_widget.clear()
+
+        self._audio_enforce_generation += 1
+
+        QTimer.singleShot(0, lambda: setattr(self, "_is_clearing", False))
 
     def update_grid(self):
         widgets_in_layout = set()
@@ -801,8 +899,10 @@ class NewsBoardVLC(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, w)
             self.list_manager.grid_list_widget.addItem(item)
 
-    # ---------------- Single speaker policy ----------------
+    # audio policy
     def toggle_mute_single(self, video_widget: QtTile):
+        if self._is_clearing:
+            return
         if self.currently_unmuted == video_widget:
             video_widget.set_mute_state(True)
             self.currently_unmuted = None
@@ -813,6 +913,8 @@ class NewsBoardVLC(QMainWindow):
         self._enforce_audio_policy_with_retries()
 
     def on_tile_playing(self, tile: QtTile):
+        if self._is_clearing:
+            return
         if self.currently_unmuted is None and self.allow_auto_select:
             self.currently_unmuted = tile
         self._enforce_audio_policy_with_retries()
@@ -834,12 +936,13 @@ class NewsBoardVLC(QMainWindow):
         for i in range(1, self.AUDIO_RETRY_COUNT + 1):
             QTimer.singleShot(self.AUDIO_RETRY_DELAY_MS * i, lambda g=gen: self._enforce_audio_policy(g))
 
-    # ---------------- Volume UI ----------------
+    # volume UI
     def on_volume_changed(self, value: int):
         self.active_volume = int(value)
         self.volume_label.setText(f"Volume {self.active_volume}")
         self._enforce_audio_policy_with_retries()
 
+    # fullscreen
     def toggle_fullscreen_tile(self, tile: QtTile):
         if self.isFullScreen():
             if self.fullscreen_tile == tile:
@@ -862,9 +965,12 @@ class NewsBoardVLC(QMainWindow):
             self.showFullScreen()
 
     def exit_fullscreen(self):
-        if self.fullscreen_tile:
-            self.fullscreen_tile.set_is_fullscreen(False)
-            self.fullscreen_tile = None
+        try:
+            if self.fullscreen_tile:
+                self.fullscreen_tile.set_is_fullscreen(False)
+        except Exception:
+            pass
+        self.fullscreen_tile = None
 
         if self.main_toolbar:
             self.main_toolbar.show()

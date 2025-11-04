@@ -1,17 +1,41 @@
 {
-    "geometry": "AdnQywADAAAAAAAA////+AAAB38AAAQHAAAAAQAAACAAAAd+AAAEBgAAAAACAAAAB4AAAAAAAAAAFwAAB38AAAQH",
+    "geometry": "AdnQywADAAAAAAABAAAAAQAAB34AAAQGAAAAAQAAACAAAAd+AAAEBgAAAAAAAAAAB4AAAAABAAAAIAAAB34AAAQG",
     "videos": [
         [
-            "https://www.youtube.com/@CNBC/live",
-            "CBS News"
+            "https://www.youtube.com/@ABCNews/live",
+            "ABC News"
+        ],
+        [
+            "https://www.youtube.com/@aljazeeraenglish/live",
+            "Al Jazeera"
+        ],
+        [
+            "https://www.youtube.com/@AssociatedPress/live",
+            "Associated Press"
+        ],
+        [
+            "https://www.youtube.com/@BleacherReport/live",
+            "Bleacher Report"
+        ],
+        [
+            "https://www.youtube.com/@markets/live",
+            "Bloomberg Business News"
+        ],
+        [
+            "https://www.youtube.com/foxbusiness/live",
+            "Fox Business"
         ],
         [
             "https://www.youtube.com/embed/4nMfRpesYfw?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
-            "FoxNews"
+            "Fox News Now"
         ],
         [
             "https://www.youtube.com/@Foxweather/live",
             "Fox Weather"
+        ],
+        [
+            "https://www.youtube.com/@MoreMaxVelocity/live",
+            "More Max Velocity"
         ],
         [
             "https://www.youtube.com/@NBCNews/live",
@@ -22,20 +46,24 @@
             "SkyNews"
         ],
         [
+            "https://www.youtube.com/@thehill/live",
+            "The Hill"
+        ],
+        [
+            "https://www.youtube.com/@USATODAY/live",
+            "USA Today Live"
+        ],
+        [
+            "https://www.youtube.com/@YahooFinance/live",
+            "Yahoo!  Finance"
+        ],
+        [
+            "https://www.youtube.com/@VICENews/live",
+            "ViceNews"
+        ],
+        [
             "https://www.youtube.com/@OfficialYallBot/live",
             "Yallbot Weather"
-        ],
-        [
-            "https://www.youtube.com/@CBSNews/live",
-            "CBS News"
-        ],
-        [
-            "https://www.youtube.com/@ABCNews/live",
-            "ABC News"
-        ],
-        [
-            "https://www.youtube.com/@MoreMaxVelocity/live",
-            "More Max Velocity"
         ]
     ],
     "active_volume": 100
