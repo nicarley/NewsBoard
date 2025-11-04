@@ -1,67 +1,60 @@
-"""
-NewsBoard + VLC Merge
-PyQt6 application that keeps NewsBoard features and uses VLC for video tiles.
-
-Requirements
-pip install PyQt6 python-vlc yt-dlp
-Install VLC on the system so libvlc is on PATH. On macOS use Homebrew. On Linux install the vlc package.
-
-Files
-settings/news_feeds.json
-settings/app_state.json
-"""
-
 import sys
-import os
 import re
 import json
 import math
+import threading
 from pathlib import Path
 from urllib.parse import urlparse, parse_qsl
 from collections import deque
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QUrl, QByteArray, QTimer, QSize, QEvent
-from PyQt6.QtGui import QKeySequence, QShortcut, QAction
+from PyQt6.QtCore import (
+    Qt,
+    QByteArray,
+    QTimer,
+    QSize,
+    QObject,
+    pyqtSignal,
+)
+from PyQt6.QtGui import QKeySequence, QShortcut, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QGridLayout,
     QHBoxLayout,
+    QVBoxLayout,
     QLineEdit,
     QMainWindow,
     QPushButton,
     QWidget,
     QListWidget,
     QDockWidget,
-    QVBoxLayout,
     QTabWidget,
     QListWidgetItem,
     QDialog,
     QFormLayout,
     QDialogButtonBox,
     QStyle,
-    QMenu,
     QAbstractItemView,
     QSizePolicy,
     QLabel,
     QToolBar,
     QWidgetAction,
     QFrame,
-    QMessageBox,
+    QSlider,
 )
 
-# VLC playback
-import vlc
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtMultimediaWidgets import QVideoWidget
 
-# YouTube resolver
+version="2025.11.04"
+
 try:
     from yt_dlp import YoutubeDL
-
     YT_AVAILABLE = True
 except Exception:
     YT_AVAILABLE = False
 
-SETTINGS_DIR = Path("settings")
+SETTINGS_DIR = Path("resources/settings")
 NEWS_FEEDS_FILE = SETTINGS_DIR / "news_feeds.json"
 APP_STATE_FILE = SETTINGS_DIR / "app_state.json"
 
@@ -73,9 +66,7 @@ YOUTUBE_HOSTS = (
     "www.youtube-nocookie.com",
 )
 
-
-# ------------- URL helpers -------------
-
+# ---------------- URL helpers ----------------
 
 def _is_youtube_url(u: str) -> bool:
     try:
@@ -84,9 +75,11 @@ def _is_youtube_url(u: str) -> bool:
         return False
     return any(h == netloc or netloc.endswith("." + h) for h in YOUTUBE_HOSTS)
 
-
 def build_embed_or_watch(url: str) -> str:
-    """Normalize various YouTube forms to a canonical watch URL or return the original URL."""
+    m = re.search(r'<iframe[^>]+src="([^"]+)"', url, re.IGNORECASE)
+    if m:
+        url = m.group(1)
+
     try:
         p = urlparse(url)
     except Exception:
@@ -116,143 +109,182 @@ def build_embed_or_watch(url: str) -> str:
 
     return url
 
-
 def resolve_youtube_to_direct(url: str) -> Optional[str]:
-    """Resolve a YouTube URL to a direct media URL that VLC can play."""
     if not YT_AVAILABLE:
         return None
     ydl_opts = {
         "quiet": True,
         "noprogress": True,
-        "format": "best[protocol*=http][ext=mp4]/best[protocol*=http]/best/bestvideo+bestaudio/best",
+        "format": (
+            "best[acodec!=none][protocol*=http]/"
+            "best[acodec!=none]/"
+            "best"
+        ),
     }
     try:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            if "url" in info:
+            if "url" in info and info.get("acodec") not in (None, "none"):
                 return info["url"]
-            fmts = info.get("formats", [])
-            for f in reversed(fmts):
+            for f in reversed(info.get("formats", [])):
                 u = f.get("url")
                 if not u:
                     continue
+                if f.get("acodec") in (None, "none"):
+                    continue
                 proto = f.get("protocol", "")
-                if proto.startswith("http") or u.endswith(".m3u8"):
+                if u.endswith(".m3u8") or proto.startswith("http"):
                     return u
     except Exception:
         return None
     return None
 
+# ---------------- Async resolver ----------------
 
-# ------------- VLC tile -------------
+class YtResolveWorker(QObject):
+    resolved = pyqtSignal(str)
+    failed = pyqtSignal(str)
 
+    def __init__(self, url: str, parent=None):
+        super().__init__(parent)
+        self.url = url
 
-class VlcTile(QFrame):
-    def __init__(self, vlc_instance, url: str, title: str, parent=None):
+    def start(self):
+        def run():
+            direct = resolve_youtube_to_direct(self.url)
+            if direct:
+                self.resolved.emit(direct)
+            else:
+                self.failed.emit("Could not resolve YouTube to a direct stream")
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+
+# ---------------- Qt Multimedia tile ----------------
+
+class QtTile(QFrame):
+    # Signals so the controller always receives actions regardless of Qt parenting
+    requestToggle = pyqtSignal(object)   # emits self when user clicks the mute button
+    started = pyqtSignal(object)         # emits self when playback changes or starts
+
+    def __init__(self, url: str, title: str, parent=None, muted: bool = True):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.url = url
         self.title = title or "Video"
+        self.is_muted = muted
 
-        self.instance = vlc_instance
-        self.player = self.instance.media_player_new()
 
-        self.canvas = QWidget(self)
-        self.canvas.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
-        self.canvas.setMinimumSize(160, 90)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        self.label = QLabel(self.title, self)
-        self.label.setStyleSheet(
-            "color: white; background: rgba(0,0,0,.45); padding: 2px 6px; border-radius: 4px;"
-        )
+        self.video_widget = QVideoWidget(self)
+        self.video_widget.setMinimumSize(160, 90)
+        outer.addWidget(self.video_widget, 1)
 
-        style = self.style()
-        self.mute_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_MediaVolumeMuted), "", self
-        )
-        self.mute_button.setToolTip("Mute or unmute audio")
-        self.mute_button.setCheckable(True)
+        controls = QWidget(self)
+        controls.setObjectName("controls")
+        controls.setStyleSheet("#controls { background: rgba(0,0,0,0.55); } QLabel { color: white; }")
+        row = QHBoxLayout(controls)
+        row.setContentsMargins(6, 4, 6, 4)
+        row.setSpacing(6)
+
+        self.label = QLabel(self.title, controls)
+        self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        self.mute_button = QPushButton("", controls)
+        self.mute_button.setToolTip("Mute or unmute audio for this tile")
         self.mute_button.setFixedSize(24, 24)
 
-        self.remove_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), "", self
-        )
+        self.remove_button = QPushButton("", controls)
         self.remove_button.setToolTip("Remove video")
         self.remove_button.setFixedSize(24, 24)
 
-        lay = QGridLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addWidget(self.canvas, 0, 0)
+        row.addWidget(self.label)
+        row.addStretch()
+        row.addWidget(self.mute_button)
+        row.addWidget(self.remove_button)
+        outer.addWidget(controls, 0)
 
-        self.is_muted = True
-        self.player.audio_set_mute(True)
-        self.mute_button.setChecked(True)
+        # media setup
+        self.audio = QAudioOutput(self)
+        self.player = QMediaPlayer(self)
+        self.player.setAudioOutput(self.audio)
+        self.player.setVideoOutput(self.video_widget.videoSink())
 
-        QTimer.singleShot(0, self._place_overlay)
+        # initial audio state
+        self.audio.setMuted(self.is_muted)
+        self.audio.setVolume(0.0 if self.is_muted else 0.85)
 
+        # state hooks
+        self.player.playbackStateChanged.connect(lambda *_: self.started.emit(self))
+        self.player.mediaStatusChanged.connect(lambda *_: self.started.emit(self))
+
+        self._refresh_icons()
+
+        # important: signal to controller rather than calling parent
+        self.mute_button.clicked.connect(lambda: self.requestToggle.emit(self))
+
+        # start playback
         self.play_url(self.url)
-        self.mute_button.clicked.connect(self._toggle_mute)
 
-    def event(self, e: QEvent):
-        if e.type() in (
-            QEvent.Type.Resize,
-            QEvent.Type.Show,
-            QEvent.Type.PolishRequest,
-        ):
-            QTimer.singleShot(0, self._place_overlay)
-        return super().event(e)
-
-    def _place_overlay(self):
-        margin = 6
-        w = self.width()
-        self.label.move(margin, margin)
-        self.remove_button.move(max(0, w - self.remove_button.width() - margin), margin)
-        self.mute_button.move(
-            max(
-                0,
-                w
-                - self.remove_button.width()
-                - self.mute_button.width()
-                - margin
-                - 4,
-            ),
-            margin,
-        )
-
-    def _widget_id(self) -> int:
-        return int(self.canvas.winId())
-
-    def _attach_output(self):
-        wid = self._widget_id()
-        if sys.platform == "win32":
-            self.player.set_hwnd(wid)
-        elif sys.platform == "darwin":
-            self.player.set_nsobject(wid)
-        else:
-            self.player.set_xwindow(wid)
-
+    # ---------- Playback ----------
     def play_url(self, url: str):
+        from PyQt6.QtCore import QUrl
         src = build_embed_or_watch(url)
         if _is_youtube_url(src):
-            direct = resolve_youtube_to_direct(src)
-            if direct:
-                src = direct
-        media = self.instance.media_new(src)
-        self.player.set_media(media)
-        self._attach_output()
-        self.player.play()
+            if YT_AVAILABLE:
+                self.label.setText(f"{self.title}  Resolving…")
+                self._yt_worker = YtResolveWorker(src, self)
+                self._yt_worker.resolved.connect(lambda direct: self._apply_source(QUrl(direct)))
+                self._yt_worker.failed.connect(lambda _msg: self.label.setText(f"{self.title}  YouTube resolve failed"))
+                self._yt_worker.start()
+                return
+            else:
+                self.label.setText(f"{self.title}  yt_dlp not installed")
+        # direct
+        self._apply_source(QUrl(src))
 
-    def _toggle_mute(self):
-        self.is_muted = not self.is_muted
-        self.player.audio_set_mute(self.is_muted)
+    def _apply_source(self, qurl):
+        self.player.setSource(qurl)
+        self.player.play()
+        self.label.setText(self.title)
+        QTimer.singleShot(0, lambda: self.started.emit(self))
+
+    # ---------- Audio control ----------
+    def hard_mute(self):
+        self.audio.setMuted(True)
+        self.audio.setVolume(0.0)
+        self.is_muted = True
+        self._refresh_icons()
+
+    def make_active(self, volume_percent: int):
+        vol = max(0, min(100, int(volume_percent))) / 100.0
+        self.audio.setMuted(False)
+        self.audio.setVolume(vol)
+        self.is_muted = False
+        self._refresh_icons()
+
+    # API used by controller
+    def set_mute_state(self, muted: bool):
+        if muted:
+            self.hard_mute()
+        else:
+            self.audio.setMuted(False)
+            self.is_muted = False
+            self._refresh_icons()
+
+    def set_audio_for_active(self, volume_percent: int):
+        self.make_active(volume_percent)
+
+    # ---------- UI ----------
+    def _refresh_icons(self):
         style = self.style()
-        icon = style.standardIcon(
-            QStyle.StandardPixmap.SP_MediaVolumeMuted
-            if self.is_muted
-            else QStyle.StandardPixmap.SP_MediaVolume
+        self.mute_button.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_MediaVolumeMuted if self.is_muted
+                               else QStyle.StandardPixmap.SP_MediaVolume)
         )
-        self.mute_button.setIcon(icon)
+        self.remove_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
 
     def stop(self):
         try:
@@ -264,9 +296,7 @@ class VlcTile(QFrame):
         self.stop()
         super().closeEvent(e)
 
-
-# ------------- Feed dialog and list dock -------------
-
+# ---------------- Feed dialog and list dock ----------------
 
 class FeedDialog(QDialog):
     def __init__(self, parent=None, name="", url=""):
@@ -291,7 +321,6 @@ class FeedDialog(QDialog):
 
     def get_feed_data(self):
         return self.name_input.text(), self.url_input.text()
-
 
 class ListManager(QDockWidget):
     def __init__(self, parent=None):
@@ -387,16 +416,17 @@ class ListManager(QDockWidget):
         self.grid_layout.addWidget(self.grid_list_widget, 1)
         self.tabs.addTab(self.grid_tab, "Grid")
 
-
-# ------------- Main window -------------
-
+# ---------------- Main window with single speaker policy ----------------
 
 class NewsBoardVLC(QMainWindow):
+    AUDIO_RETRY_COUNT = 6
+    AUDIO_RETRY_DELAY_MS = 150
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("News Board")
+        self.setWindowTitle(f'NewsBoard {version}')
+        self.setWindowIcon(QIcon("resources/icon.ico"))
         self.setBaseSize(1280, 720)
-        self.vlc_instance = vlc.Instance()
 
         self.central_widget = QWidget()
         the_layout = QGridLayout(self.central_widget)
@@ -405,25 +435,23 @@ class NewsBoardVLC(QMainWindow):
         self.grid_layout = the_layout
         self.setCentralWidget(self.central_widget)
 
-        self.video_widgets: list[VlcTile] = []
+        self.video_widgets: list[QtTile] = []
+        self.currently_unmuted: Optional[QtTile] = None
+        self.active_volume: int = 85
+        self.allow_auto_select: bool = True
+        self._audio_enforce_generation = 0
 
         self.list_manager = ListManager(self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.list_manager)
 
-        self.list_manager.remove_from_grid_button.clicked.connect(
-            self.remove_video_from_grid_list
-        )
-        self.list_manager.add_feed_to_grid_button.clicked.connect(
-            self.add_video_from_feed
-        )
+        self.list_manager.remove_from_grid_button.clicked.connect(self.remove_video_from_grid_list)
+        self.list_manager.add_feed_to_grid_button.clicked.connect(self.add_video_from_feed)
         self.list_manager.add_all_feeds_button.clicked.connect(self.add_all_feeds)
         self.list_manager.add_new_feed_button.clicked.connect(self.add_new_feed)
         self.list_manager.edit_feed_button.clicked.connect(self.edit_feed)
         self.list_manager.remove_feed_button.clicked.connect(self.remove_feed)
         self.list_manager.remove_all_feeds_button.clicked.connect(self.remove_all_feeds)
-        self.list_manager.news_feed_list_widget.model().rowsMoved.connect(
-            self.reorder_news_feeds
-        )
+        self.list_manager.news_feed_list_widget.model().rowsMoved.connect(self.reorder_news_feeds)
 
         self.shortcut_delete = QShortcut(QKeySequence("Delete"), self)
         self.shortcut_delete.activated.connect(self.remove_video_from_grid_list)
@@ -433,7 +461,6 @@ class NewsBoardVLC(QMainWindow):
         self.list_manager.tabs.setCurrentIndex(0)
 
         self._build_top_toolbar()
-        self._build_menu_bar()
 
         self._queue = deque()
         self._queue_timer = QTimer(self)
@@ -441,41 +468,20 @@ class NewsBoardVLC(QMainWindow):
         self._queue_timer.timeout.connect(self._process_queue)
 
         self.load_state()
+        self.volume_slider.blockSignals(True)
+        self.volume_slider.setValue(self.active_volume)
+        self.volume_label.setText(f"Volume {self.active_volume}")
+        self.volume_slider.blockSignals(False)
 
+    # Actions from grid tab
     def remove_video_from_grid_list(self):
         items = self.list_manager.grid_list_widget.selectedItems()
         if not items:
             return
         for item in items:
             w = item.data(Qt.ItemDataRole.UserRole)
-            if isinstance(w, VlcTile):
+            if isinstance(w, QtTile):
                 self.remove_video_widget(w)
-
-    def _build_menu_bar(self):
-        menu_bar = self.menuBar()
-
-        file_menu = menu_bar.addMenu("&File")
-        file_menu.addAction("Add Video from URL...", self.add_video_from_input_dialog)
-        file_menu.addSeparator()
-        file_menu.addAction("Exit", self.close)
-
-        view_menu = menu_bar.addMenu("&View")
-        toggle_action = QAction("Toggle List Manager", self)
-        toggle_action.setCheckable(True)
-        toggle_action.setChecked(self.list_manager.isVisible())
-        toggle_action.toggled.connect(self.list_manager.setVisible)
-        self.list_manager.visibilityChanged.connect(toggle_action.setChecked)
-        self.manage_lists_button.toggled.connect(self.list_manager.setVisible)
-        self.list_manager.visibilityChanged.connect(
-            self.manage_lists_button.setChecked
-        )
-        view_menu.addAction(toggle_action)
-
-        playback_menu = menu_bar.addMenu("&Playback")
-        playback_menu.addAction("Mute All", self.mute_all)
-        playback_menu.addAction("Unmute All", self.unmute_all)
-        playback_menu.addSeparator()
-        playback_menu.addAction("Remove All Videos", self.remove_all_videos)
 
     def _build_top_toolbar(self):
         tb = QToolBar("Main")
@@ -494,11 +500,11 @@ class NewsBoardVLC(QMainWindow):
         self.manage_lists_button.setCheckable(True)
         self.manage_lists_button.setChecked(True)
         self.manage_lists_button.setToolTip("Show or hide the list manager panel")
+        self.manage_lists_button.toggled.connect(self.list_manager.setVisible)
+        self.list_manager.visibilityChanged.connect(self.manage_lists_button.setChecked)
 
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText(
-            "Enter YouTube or direct stream URL or paste an iframe tag"
-        )
+        self.url_input.setPlaceholderText("Enter YouTube or direct stream URL or paste an iframe tag")
         self.url_input.setToolTip("Enter a URL or iframe code to add a video to the grid")
 
         self.add_video_button = QPushButton(
@@ -517,40 +523,41 @@ class NewsBoardVLC(QMainWindow):
         tb.addWidget(self.add_video_button)
 
         spacer = QWidget()
-        spacer.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-        )
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
-        self.mute_all_button = QPushButton(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaVolumeMuted),
-            " Mute All",
-        )
-        self.mute_all_button.clicked.connect(self.mute_all)
-        tb.addWidget(self.mute_all_button)
+
+        self.volume_label = QLabel("Volume 85")
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setSingleStep(1)
+        self.volume_slider.setPageStep(5)
+        self.volume_slider.setFixedWidth(180)
+        self.volume_slider.setToolTip("Controls the volume of the active tile only")
+        self.volume_slider.valueChanged.connect(self.on_volume_changed)
+
+        tb.addWidget(self.volume_label)
+        tb.addWidget(self.volume_slider)
+
+        spacer2 = QWidget()
+        spacer2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tb.addWidget(spacer2)
+
         self.remove_all_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), " Remove All"
         )
         self.remove_all_button.clicked.connect(self.remove_all_videos)
         tb.addWidget(self.remove_all_button)
 
-        self.shortcut_mute_all = QShortcut(QKeySequence("Ctrl+M"), self)
-        self.shortcut_mute_all.activated.connect(self.mute_all)
-
-        self.shortcut_unmute_all = QShortcut(QKeySequence("Ctrl+Shift+M"), self)
-        self.shortcut_unmute_all.activated.connect(self.unmute_all)
-
         self.shortcut_add_all_feeds = QShortcut(QKeySequence("Ctrl+Shift+A"), self)
         self.shortcut_add_all_feeds.activated.connect(self.add_all_feeds)
 
-        self.shortcut_delete = QShortcut(QKeySequence("Delete"), self)
-        self.shortcut_delete.activated.connect(self.remove_video_from_grid_list)
-
-    # ------------- State -------------
+    # ---------------- State ----------------
     def save_state(self):
         SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
         state = {
             "geometry": self.saveGeometry().toBase64().data().decode(),
             "videos": [(w.url, w.title) for w in self.video_widgets],
+            "active_volume": int(self.active_volume),
         }
         with APP_STATE_FILE.open("w", encoding="utf-8") as f:
             json.dump(state, f, indent=4)
@@ -561,7 +568,10 @@ class NewsBoardVLC(QMainWindow):
         try:
             with APP_STATE_FILE.open("r", encoding="utf-8") as f:
                 state = json.load(f)
-            self.restoreGeometry(QByteArray.fromBase64(state["geometry"].encode()))
+            geom = state.get("geometry")
+            if geom:
+                self.restoreGeometry(QByteArray.fromBase64(geom.encode()))
+            self.active_volume = int(state.get("active_volume", 85))
             for url, title in state.get("videos", []):
                 self._enqueue(url, title)
         except Exception:
@@ -571,7 +581,7 @@ class NewsBoardVLC(QMainWindow):
         self.save_state()
         super().closeEvent(event)
 
-    # ------------- Feeds -------------
+    # ---------------- Feeds ----------------
     def load_news_feeds(self):
         SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
         try:
@@ -581,7 +591,7 @@ class NewsBoardVLC(QMainWindow):
             default_feeds = {
                 "Associated Press": "https://www.youtube.com/channel/UC52X5wxOL_s5ywGvmcU7v8g",
                 "Reuters": "https://www.youtube.com/channel/UChqUTb7kYRx8-EiaN3XFrSQ",
-                "CNN": "https://www.youtube.com/watch?v=live",
+                "CNN": "https://www.youtube.com/@CNN",
             }
             self.news_feeds = default_feeds
             self.save_news_feeds()
@@ -681,7 +691,7 @@ class NewsBoardVLC(QMainWindow):
         self.news_feeds = new_news_feeds
         self.save_news_feeds()
 
-    # ------------- Queue and grid -------------
+    # ---------------- Queue and grid ----------------
     def _enqueue(self, url, title):
         self._queue.append((url, title))
         if not self._queue_timer.isActive():
@@ -695,21 +705,42 @@ class NewsBoardVLC(QMainWindow):
         self.create_video_widget(url, title)
 
     def create_video_widget(self, url, title):
-        vw = VlcTile(self.vlc_instance, url, title, parent=self)
+        is_first_video = not bool(self.video_widgets)
+        vw = QtTile(url, title, parent=self.central_widget, muted=not is_first_video)
+
+        # connect tile signals
+        vw.requestToggle.connect(self.toggle_mute_single)
+        vw.started.connect(self.on_tile_playing)
+
         vw.remove_button.clicked.connect(lambda: self.remove_video_widget(vw))
         self.video_widgets.append(vw)
+
+        if is_first_video:
+            self.currently_unmuted = vw
+            self.allow_auto_select = True
+
         self.update_grid()
+        self._enforce_audio_policy_with_retries()
 
     def remove_video_widget(self, widget):
         if widget in self.video_widgets:
+            was_unmuted = widget == self.currently_unmuted
+            if was_unmuted:
+                self.currently_unmuted = None
+
             self.video_widgets.remove(widget)
-            try:
-                widget.deleteLater()
-            except Exception:
-                pass
+            widget.stop()
+            widget.deleteLater()
+
+            if was_unmuted and self.video_widgets:
+                self.currently_unmuted = self.video_widgets[0]
+                self.allow_auto_select = True
+
             self.update_grid()
+            self._enforce_audio_policy_with_retries()
 
     def remove_all_videos(self):
+        self.currently_unmuted = None
         for w in list(self.video_widgets):
             self.remove_video_widget(w)
 
@@ -717,7 +748,7 @@ class NewsBoardVLC(QMainWindow):
         widgets_in_layout = set()
         for i in range(self.grid_layout.count()):
             item = self.grid_layout.itemAt(i)
-            if item and item.widget() and isinstance(item.widget(), VlcTile):
+            if item and item.widget() and isinstance(item.widget(), QtTile):
                 widgets_in_layout.add(item.widget())
 
         video_widgets_set = set(self.video_widgets)
@@ -743,33 +774,52 @@ class NewsBoardVLC(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, w)
             self.list_manager.grid_list_widget.addItem(item)
 
-    # ------------- Playback helpers -------------
-    def mute_all(self):
-        for vw in list(self.video_widgets):
-            try:
-                if not vw.is_muted:
-                    vw._toggle_mute()
-            except Exception:
-                pass
+    # ---------------- Single speaker policy ----------------
+    def toggle_mute_single(self, video_widget: QtTile):
+        if self.currently_unmuted == video_widget:
+            video_widget.set_mute_state(True)
+            self.currently_unmuted = None
+            self.allow_auto_select = False
+        else:
+            self.currently_unmuted = video_widget
+            self.allow_auto_select = True
+        self._enforce_audio_policy_with_retries()
 
-    def unmute_all(self):
-        for vw in list(self.video_widgets):
-            try:
-                if vw.is_muted:
-                    vw._toggle_mute()
-            except Exception:
-                pass
+    def on_tile_playing(self, tile: QtTile):
+        if self.currently_unmuted is None and self.allow_auto_select:
+            self.currently_unmuted = tile
+        self._enforce_audio_policy_with_retries()
 
+    def _enforce_audio_policy(self, generation: int):
+        if generation != self._audio_enforce_generation:
+            return
+        active = self.currently_unmuted
+        for tile in self.video_widgets:
+            if tile is not active:
+                tile.set_mute_state(True)
+        if active:
+            active.set_audio_for_active(self.active_volume)
 
-# ------------- Entry point -------------
+    def _enforce_audio_policy_with_retries(self):
+        self._audio_enforce_generation += 1
+        gen = self._audio_enforce_generation
+        self._enforce_audio_policy(gen)
+        for i in range(1, self.AUDIO_RETRY_COUNT + 1):
+            QTimer.singleShot(self.AUDIO_RETRY_DELAY_MS * i, lambda g=gen: self._enforce_audio_policy(g))
 
+    # ---------------- Volume UI ----------------
+    def on_volume_changed(self, value: int):
+        self.active_volume = int(value)
+        self.volume_label.setText(f"Volume {self.active_volume}")
+        self._enforce_audio_policy_with_retries()
+
+# ---------------- Entry point ----------------
 
 def main():
     app = QApplication(sys.argv)
     win = NewsBoardVLC()
     win.show()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()

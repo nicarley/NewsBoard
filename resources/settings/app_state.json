@@ -1,0 +1,38 @@
+{
+    "geometry": "AdnQywADAAAAAAAA////+AAAB38AAAQHAAAAAQAAACAAAAd+AAAEBgAAAAACAAAAB4AAAAAAAAAAFwAAB38AAAQH",
+    "videos": [
+        [
+            "https://www.youtube.com/@CNBC/live",
+            "CBS News"
+        ],
+        [
+            "https://www.youtube.com/embed/4nMfRpesYfw?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+            "FoxNews"
+        ],
+        [
+            "https://www.youtube.com/@Foxweather/live",
+            "Fox Weather"
+        ],
+        [
+            "https://www.youtube.com/@NBCNews/live",
+            "NBC News"
+        ],
+        [
+            "https://www.youtube.com/@SkyNews/live",
+            "SkyNews"
+        ],
+        [
+            "https://www.youtube.com/@OfficialYallBot/live",
+            "Yallbot Weather"
+        ],
+        [
+            "https://www.youtube.com/@CBSNews/live",
+            "CBS News"
+        ],
+        [
+            "https://www.youtube.com/@ABCNews/live",
+            "ABC News"
+        ]
+    ],
+    "active_volume": 100
+}
