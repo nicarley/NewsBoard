@@ -1,5 +1,58 @@
 {
     "geometry": "AdnQywADAAAAAAABAAAAAQAAB34AAAQGAAAAAQAAACAAAAd+AAAEBgAAAAAAAAAAB4AAAAABAAAAIAAAB34AAAQG",
-    "videos": [],
+    "videos": [
+        [
+            "https://www.youtube.com/@ABCNews/live",
+            "ABC News"
+        ],
+        [
+            "https://www.youtube.com/@aljazeeraenglish/live",
+            "Al Jazeera"
+        ],
+        [
+            "https://www.youtube.com/@AssociatedPress/live",
+            "Associated Press"
+        ],
+        [
+            "https://www.youtube.com/@BleacherReport/live",
+            "Bleacher Report"
+        ],
+        [
+            "https://www.youtube.com/live/FTpvdUCMmDE?pp=YADSBwkJwBgBhyohjO8%3D",
+            "CBS News Live"
+        ],
+        [
+            "https://www.youtube.com/live/9NyxcX3rhQs",
+            "CNBC"
+        ],
+        [
+            "https://www.youtube.com/embed/4nMfRpesYfw?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+            "Fox News Now"
+        ],
+        [
+            "https://www.youtube.com/@Foxweather/live",
+            "Fox Weather"
+        ],
+        [
+            "https://www.youtube.com/@NBCNews/live",
+            "NBC News"
+        ],
+        [
+            "https://www.youtube.com/@PBSNewsHour/live",
+            "PBSNewsHour"
+        ],
+        [
+            "https://www.youtube.com/@SkyNews/live",
+            "SkyNews"
+        ],
+        [
+            "https://www.youtube.com/@USATODAY/live",
+            "USA Today Live"
+        ],
+        [
+            "https://www.youtube.com/@OfficialYallBot/live",
+            "Yallbot Weather"
+        ]
+    ],
     "active_volume": 100
 }

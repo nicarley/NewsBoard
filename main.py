@@ -208,6 +208,10 @@ class QtTile(QFrame):
         self.mute_button.setToolTip("Mute or unmute audio for this tile")
         self.mute_button.setFixedSize(20, 20)
 
+        self.reload_button = QPushButton("", controls)
+        self.reload_button.setToolTip("Reload video")
+        self.reload_button.setFixedSize(20, 20)
+
         self.fullscreen_button = QPushButton("", controls)
         self.fullscreen_button.setFixedSize(20, 20)
 
@@ -218,6 +222,7 @@ class QtTile(QFrame):
         row.addWidget(self.label)
         row.addStretch()
         row.addWidget(self.mute_button)
+        row.addWidget(self.reload_button)
         row.addWidget(self.fullscreen_button)
         row.addWidget(self.remove_button)
         outer.addWidget(controls, 0)
@@ -236,6 +241,7 @@ class QtTile(QFrame):
         self._refresh_icons()
 
         self.mute_button.clicked.connect(lambda: self.requestToggle.emit(self))
+        self.reload_button.clicked.connect(lambda: self.play_url(self.url))
         self.fullscreen_button.clicked.connect(lambda: self.requestFullscreen.emit(self))
 
         self.play_url(self.url)
@@ -290,6 +296,7 @@ class QtTile(QFrame):
             style.standardIcon(QStyle.StandardPixmap.SP_MediaVolumeMuted if self.is_muted
                                else QStyle.StandardPixmap.SP_MediaVolume)
         )
+        self.reload_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         if self.is_fullscreen_tile:
             self.fullscreen_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
             self.fullscreen_button.setToolTip("Exit Fullscreen")
@@ -304,6 +311,7 @@ class QtTile(QFrame):
             lambda: self.player.playbackStateChanged.disconnect(),
             lambda: self.player.mediaStatusChanged.disconnect(),
             lambda: self.mute_button.clicked.disconnect(),
+            lambda: self.reload_button.clicked.disconnect(),
             lambda: self.fullscreen_button.clicked.disconnect(),
             lambda: self.remove_button.clicked.disconnect(),
         ):
