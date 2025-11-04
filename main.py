@@ -189,22 +189,22 @@ class QtTile(QFrame):
         controls.setObjectName("controls")
         controls.setStyleSheet("#controls { background: black } QLabel { color: white; }")
         row = QHBoxLayout(controls)
-        row.setContentsMargins(6, 4, 6, 4)
-        row.setSpacing(6)
+        row.setContentsMargins(3, 2, 3, 2)
+        row.setSpacing(3)
 
         self.label = QLabel(self.title, controls)
         self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         self.mute_button = QPushButton("", controls)
         self.mute_button.setToolTip("Mute or unmute audio for this tile")
-        self.mute_button.setFixedSize(24, 24)
+        self.mute_button.setFixedSize(20, 20)
 
         self.fullscreen_button = QPushButton("", controls)
-        self.fullscreen_button.setFixedSize(24, 24)
+        self.fullscreen_button.setFixedSize(20, 20)
 
         self.remove_button = QPushButton("", controls)
         self.remove_button.setToolTip("Remove video")
-        self.remove_button.setFixedSize(24, 24)
+        self.remove_button.setFixedSize(20, 20)
 
         row.addWidget(self.label)
         row.addStretch()

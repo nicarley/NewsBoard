@@ -1,5 +1,5 @@
 {
-    "geometry": "AdnQywADAAAAAAABAAAAAQAAB34AAAQGAAAAAQAAACAAAAd+AAAEBgAAAAAAAAAAB4AAAAABAAAAIAAAB34AAAQG",
+    "geometry": "AdnQywADAAD///8SAAAAZgAABo8AAARr////EgAAAIUAAAaPAAAEawAAAAAAAAAAB4D///8SAAAAhQAABo8AAARr",
     "videos": [
         [
             "https://www.youtube.com/@ABCNews/live",
@@ -34,10 +34,6 @@
             "Fox Weather"
         ],
         [
-            "https://www.youtube.com/@MoreMaxVelocity/live",
-            "More Max Velocity"
-        ],
-        [
             "https://www.youtube.com/@NBCNews/live",
             "NBC News"
         ],
@@ -64,6 +60,10 @@
         [
             "https://www.youtube.com/@OfficialYallBot/live",
             "Yallbot Weather"
+        ],
+        [
+            "https://www.youtube.com/live/FTpvdUCMmDE?pp=YADSBwkJwBgBhyohjO8%3D",
+            "CBS News Live"
         ]
     ],
     "active_volume": 100
