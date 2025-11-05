@@ -14,10 +14,6 @@
             "Associated Press"
         ],
         [
-            "https://www.youtube.com/@BleacherReport/live",
-            "Bleacher Report"
-        ],
-        [
             "https://www.youtube.com/live/FTpvdUCMmDE?pp=YADSBwkJwBgBhyohjO8%3D",
             "CBS News Live"
         ],
@@ -46,12 +42,12 @@
             "SkyNews"
         ],
         [
-            "https://www.youtube.com/@USATODAY/live",
-            "USA Today Live"
-        ],
-        [
             "https://www.youtube.com/@OfficialYallBot/live",
             "Yallbot Weather"
+        ],
+        [
+            "https://www.youtube.com/@YahooFinance/live",
+            "Yahoo!  Finance"
         ]
     ],
     "active_volume": 100
