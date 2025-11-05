@@ -307,25 +307,29 @@ class SettingsManager:
         }
         Path(path).write_text(json.dumps(bundle, indent=4), encoding="utf-8")
 
-    def import_profile(self, parent: QWidget):
-        path, _ = QFileDialog.getOpenFileName(parent, tr("Settings", "Import profile"), "", "JSON (*.json)")
-        if not path:
-            return
-        try:
-            bundle = json.loads(Path(path).read_text(encoding="utf-8"))
-            settings = bundle.get("settings")
-            if settings:
-                self.settings = AppSettings.from_dict(settings)
-                self.save()
-            feeds = bundle.get("feeds")
-            if feeds:
-                self._write_json(self.feeds_file, feeds)
-            state = bundle.get("state")
-            if state:
-                self._write_json(self.state_file, state)
-            QMessageBox.information(parent, APP_NAME, tr("Settings", "Profile imported"))
-        except Exception as e:
-            QMessageBox.warning(parent, APP_NAME, tr("Settings", "Could not import profile"))
+    def import_profile(self, parent: QWidget) -> bool:
+        dialog = QFileDialog(parent, tr("Settings", "Import profile"), "", "JSON (*.json)")
+        if platform_name() == "macOS":
+            dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        if dialog.exec():
+            path = dialog.selectedFiles()[0]
+            try:
+                bundle = json.loads(Path(path).read_text(encoding="utf-8"))
+                settings = bundle.get("settings")
+                if settings:
+                    self.settings = AppSettings.from_dict(settings)
+                    self.save()
+                feeds = bundle.get("feeds")
+                if feeds:
+                    self._write_json(self.feeds_file, feeds)
+                state = bundle.get("state")
+                if state:
+                    self._write_json(self.state_file, state)
+                return True
+            except Exception as e:
+                QMessageBox.warning(parent, APP_NAME, tr("Settings", "Could not import profile"))
+                return False
+        return False
 
     @staticmethod
     def _read_json(path: Path, default):
@@ -779,30 +783,27 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(tr("Settings", "Settings"))
         self._sm = sm
         s = sm.settings
+        self.profile_imported = False
 
         form = QFormLayout(self)
 
         self.audio_policy = QComboBox()
         self.audio_policy.addItems(["single", "mixed"])
-        self.audio_policy.setCurrentText(s.audio_policy)
 
         self.volume_default = QSlider(Qt.Orientation.Horizontal)
         self.volume_default.setRange(0, 100)
-        self.volume_default.setValue(s.volume_default)
 
         self.yt_mode = QComboBox()
         self.yt_mode.addItems(["direct_when_possible", "embed_only"])
-        self.yt_mode.setCurrentText(s.yt_mode)
 
         self.privacy_embed_only_youtube = QCheckBox(tr("Settings", "Use embeds for YouTube"))
-        self.privacy_embed_only_youtube.setChecked(s.privacy_embed_only_youtube)
 
         self.pause_others_in_fullscreen = QCheckBox(tr("Settings", "Pause non fullscreen tiles"))
-        self.pause_others_in_fullscreen.setChecked(s.pause_others_in_fullscreen)
 
         self.theme = QComboBox()
         self.theme.addItems(["system", "light", "dark"])
-        self.theme.setCurrentText(s.theme)
+
+        self.populate_fields()
 
         form.addRow(tr("Settings", "Audio policy"), self.audio_policy)
         form.addRow(tr("Settings", "Default volume"), self.volume_default)
@@ -815,7 +816,7 @@ class SettingsDialog(QDialog):
         self.btn_export = QPushButton(tr("Settings", "Export profile"))
         self.btn_import = QPushButton(tr("Settings", "Import profile"))
         self.btn_export.clicked.connect(lambda: sm.export_profile(self))
-        self.btn_import.clicked.connect(lambda: sm.import_profile(self))
+        self.btn_import.clicked.connect(self.do_import)
         line.addWidget(self.btn_export)
         line.addWidget(self.btn_import)
         box = QWidget()
@@ -826,6 +827,20 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addWidget(buttons)
+
+    def populate_fields(self):
+        s = self._sm.settings
+        self.audio_policy.setCurrentText(s.audio_policy)
+        self.volume_default.setValue(s.volume_default)
+        self.yt_mode.setCurrentText(s.yt_mode)
+        self.privacy_embed_only_youtube.setChecked(s.privacy_embed_only_youtube)
+        self.pause_others_in_fullscreen.setChecked(s.pause_others_in_fullscreen)
+        self.theme.setCurrentText(s.theme)
+
+    def do_import(self):
+        if self._sm.import_profile(self):
+            self.profile_imported = True
+            self.accept()
 
     def apply(self):
         s = self._sm.settings
@@ -910,6 +925,14 @@ class NewsBoard(QMainWindow):
 
         # Focus and keyboard
         self.central_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def refresh_ui(self):
+        self.sm.load()
+        self.settings = self.sm.settings
+        self.apply_theme()
+        self.load_news_feeds()
+        self.remove_all_videos()
+        self.load_state()
 
     # Theming
     def apply_theme(self):
@@ -1510,7 +1533,12 @@ class NewsBoard(QMainWindow):
     # Dialogs
     def open_settings(self):
         dlg = SettingsDialog(self, self.sm)
-        if dlg.exec():
+        result = dlg.exec()
+
+        if dlg.profile_imported:
+            self.refresh_ui()
+            QMessageBox.information(self, APP_NAME, tr("Settings", "Profile imported and applied."))
+        elif result:
             dlg.apply()
             self.settings = self.sm.settings
             self.apply_theme()
