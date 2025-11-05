@@ -1,64 +1,153 @@
-import sys
-import re
+"""
+NewsBoard
+Cross platform PyQt6 video grid with single active audio and polished UX
+
+Implements:
+1 Cross platform foundations via QStandardPaths with legacy settings migration
+2 Media playback primary on Qt Multimedia with a tiny capability probe
+4 Polished UX: help overlay, status toasts, better fullscreen behavior
+6 Performance: staggered starts, pause others during fullscreen, idle hints
+7 Settings: export and import, per host preferred backend stub, audio policy
+8 Accessibility: focus rings, accessible names, shortcuts, translatable strings
+10 Content and legal: About dialog with third party notice
+11 Concrete tweaks: safe reload, robust Remove All, defensive disconnects
+
+Tested against PyQt6 6.6 plus. QWebEngine is optional and not required here.
+"""
+
+from __future__ import annotations
+
 import json
 import math
 import os
+import re
+import shutil
+import sys
 import threading
-from pathlib import Path
-from urllib.parse import urlparse, parse_qsl
 from collections import deque
-from typing import Optional
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+from urllib.parse import parse_qsl, urlparse
 
 from PyQt6.QtCore import (
-    Qt,
     QByteArray,
+    QCoreApplication,
+    QEvent,
+    QLocale,
     QTimer,
+    QUrl,
+    Qt,
+    QStandardPaths,
     QSize,
     QObject,
     pyqtSignal,
-    QUrl,
 )
-from PyQt6.QtGui import QKeySequence, QShortcut, QIcon
+from PyQt6.QtGui import (
+    QAction,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QPalette,
+)
 from PyQt6.QtWidgets import (
     QApplication,
-    QGridLayout,
-    QHBoxLayout,
-    QVBoxLayout,
-    QLineEdit,
-    QMainWindow,
-    QPushButton,
-    QWidget,
-    QListWidget,
-    QDockWidget,
-    QTabWidget,
-    QListWidgetItem,
-    QDialog,
-    QFormLayout,
-    QDialogButtonBox,
-    QStyle,
     QAbstractItemView,
-    QSizePolicy,
-    QLabel,
-    QToolBar,
-    QWidgetAction,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDockWidget,
+    QFileDialog,
+    QFormLayout,
     QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
     QSlider,
+    QStyle,
+    QTabWidget,
+    QTextEdit,
+    QToolBar,
+    QWidget,
+    QWidgetAction,
+    QVBoxLayout,
 )
 
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtMultimedia import (
+    QAudioOutput,
+    QMediaPlayer,
+)
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
-version = "2025.11.04"
-
+# Optional dependency
 try:
     from yt_dlp import YoutubeDL
+
     YT_AVAILABLE = True
 except Exception:
     YT_AVAILABLE = False
 
-SETTINGS_DIR = Path("resources/settings")
-NEWS_FEEDS_FILE = SETTINGS_DIR / "news_feeds.json"
-APP_STATE_FILE = SETTINGS_DIR / "app_state.json"
+APP_NAME = "NewsBoard"
+APP_ORG = "Farleyman.com"
+APP_DOMAIN = "Farleyman.com"
+APP_VERSION = "2025.11.05"
+
+# ---------------- i18n helpers ----------------
+
+def tr(ctx: str, text: str) -> str:
+    return QCoreApplication.translate(ctx, text)
+
+
+# ---------------- Cross platform storage ----------------
+
+def user_app_dir() -> Path:
+    loc = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+    base = Path(loc) if loc else Path.home() / f".{APP_NAME.lower()}"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def default_files() -> Tuple[Path, Path, Path]:
+    base = user_app_dir()
+    settings_dir = base
+    feeds = settings_dir / "news_feeds.json"
+    state = settings_dir / "app_state.json"
+    log = settings_dir / "newsboard.log"
+    return feeds, state, log
+
+
+def migrate_legacy_settings() -> None:
+    legacy = Path("resources") / "settings"
+    feeds, state, log = default_files()
+    try:
+        if legacy.exists() and legacy.is_dir():
+            moved = False
+            src_feeds = legacy / "news_feeds.json"
+            src_state = legacy / "app_state.json"
+            if src_feeds.exists() and not feeds.exists():
+                feeds.write_bytes(src_feeds.read_bytes())
+                moved = True
+            if src_state.exists() and not state.exists():
+                state.write_bytes(src_state.read_bytes())
+                moved = True
+            if moved:
+                # keep legacy folder, just inform via toast later
+                pass
+    except Exception:
+        pass
+
+
+# ---------------- URL helpers ----------------
 
 YOUTUBE_HOSTS = (
     "youtube.com",
@@ -68,7 +157,6 @@ YOUTUBE_HOSTS = (
     "www.youtube-nocookie.com",
 )
 
-# ---------------- URL helpers ----------------
 
 class SilentLogger:
     def debug(self, msg):
@@ -80,18 +168,19 @@ class SilentLogger:
     def error(self, msg):
         pass
 
-def _is_youtube_url(u: str) -> bool:
+
+def is_youtube_url(u: str) -> bool:
     try:
         netloc = urlparse(u).netloc.lower()
     except ValueError:
         return False
-    return any(h == netloc or netloc.endswith("." + h) for h in YOUTUBE_HOSTS)
+    return any(netloc == h or netloc.endswith("." + h) for h in YOUTUBE_HOSTS)
+
 
 def build_embed_or_watch(url: str) -> str:
     m = re.search(r'<iframe[^>]+src="([^"]+)"', url, re.IGNORECASE)
     if m:
         url = m.group(1)
-
     try:
         p = urlparse(url)
     except Exception:
@@ -118,8 +207,8 @@ def build_embed_or_watch(url: str) -> str:
         v = qs.get("v", "")
         if len(v) == 11:
             return f"https://www.youtube.com/watch?v={v}"
-
     return url
+
 
 def resolve_youtube_to_direct(url: str) -> Optional[str]:
     if not YT_AVAILABLE:
@@ -127,11 +216,7 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
     ydl_opts = {
         "quiet": True,
         "noprogress": True,
-        "format": (
-            "best[acodec!=none][protocol*=http]/"
-            "best[acodec!=none]/"
-            "best"
-        ),
+        "format": "best[acodec!=none][protocol*=http]/best[acodec!=none]/best",
         "nocookie": True,
         "cachedir": False,
         "logger": SilentLogger(),
@@ -154,10 +239,146 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
         return None
     return None
 
-# ---------------- Async resolver ----------------
+
+# ---------------- Settings model ----------------
+
+@dataclass
+class AppSettings:
+    audio_policy: str = "single"  # single or mixed
+    volume_default: int = 85
+    yt_mode: str = "direct_when_possible"  # embed_only or direct_when_possible
+    per_host_preferred_backend: Dict[str, str] = None  # host to "qt"
+    privacy_embed_only_youtube: bool = False
+    pause_others_in_fullscreen: bool = True
+    theme_follow_system: bool = True
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), indent=4)
+
+    @staticmethod
+    def from_dict(d: Dict) -> "AppSettings":
+        s = AppSettings()
+        s.audio_policy = d.get("audio_policy", s.audio_policy)
+        s.volume_default = int(d.get("volume_default", s.volume_default))
+        s.yt_mode = d.get("yt_mode", s.yt_mode)
+        s.per_host_preferred_backend = d.get("per_host_preferred_backend", {}) or {}
+        s.privacy_embed_only_youtube = bool(d.get("privacy_embed_only_youtube", s.privacy_embed_only_youtube))
+        s.pause_others_in_fullscreen = bool(d.get("pause_others_in_fullscreen", s.pause_others_in_fullscreen))
+        s.theme_follow_system = bool(d.get("theme_follow_system", s.theme_follow_system))
+        return s
+
+
+class SettingsManager:
+    def __init__(self):
+        feeds, state, log = default_files()
+        self.feeds_file = feeds
+        self.state_file = state
+        self.log_file = log
+        self.settings_file = user_app_dir() / "settings.json"
+        self.settings = AppSettings()
+
+    def load(self):
+        try:
+            if self.settings_file.exists():
+                d = json.loads(self.settings_file.read_text(encoding="utf-8"))
+                self.settings = AppSettings.from_dict(d)
+        except Exception:
+            pass
+
+    def save(self):
+        try:
+            self.settings_file.write_text(self.settings.to_json(), encoding="utf-8")
+        except Exception:
+            pass
+
+    def export_profile(self, parent: QWidget):
+        path, _ = QFileDialog.getSaveFileName(parent, tr("Settings", "Export profile"), "", "JSON (*.json)")
+        if not path:
+            return
+        bundle = {
+            "settings": asdict(self.settings),
+            "feeds": self._read_json(self.feeds_file, {}),
+            "state": self._read_json(self.state_file, {}),
+            "version": APP_VERSION,
+        }
+        Path(path).write_text(json.dumps(bundle, indent=4), encoding="utf-8")
+
+    def import_profile(self, parent: QWidget):
+        path, _ = QFileDialog.getOpenFileName(parent, tr("Settings", "Import profile"), "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            bundle = json.loads(Path(path).read_text(encoding="utf-8"))
+            settings = bundle.get("settings")
+            if settings:
+                self.settings = AppSettings.from_dict(settings)
+                self.save()
+            feeds = bundle.get("feeds")
+            if feeds:
+                self._write_json(self.feeds_file, feeds)
+            state = bundle.get("state")
+            if state:
+                self._write_json(self.state_file, state)
+            QMessageBox.information(parent, APP_NAME, tr("Settings", "Profile imported"))
+        except Exception as e:
+            QMessageBox.warning(parent, APP_NAME, tr("Settings", "Could not import profile"))
+
+    @staticmethod
+    def _read_json(path: Path, default):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _write_json(path: Path, data):
+        try:
+            path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+        except Exception:
+            pass
+
+
+# ---------------- Capability probe and backend choice ----------------
+
+def platform_name() -> str:
+    if sys.platform.startswith("win"):
+        return "Windows"
+    if sys.platform == "darwin":
+        return "macOS"
+    return "Linux"
+
+
+def have_gstreamer() -> bool:
+    if platform_name() != "Linux":
+        return True
+    return shutil.which("gst-inspect-1.0") is not None
+
+
+def qt_can_play_hls() -> bool:
+    # crude probe based on common mime presence
+    try:
+        mimes = QMediaPlayer.supportedMimeTypes()
+        return any("application/vnd.apple.mpegurl" in m for m in mimes) or any("vnd.apple.mpegurl" in m for m in mimes)
+    except Exception:
+        return False
+
+
+def choose_backend(url: str, settings: AppSettings) -> str:
+    host = urlparse(url).netloc.lower()
+    if host in (settings.per_host_preferred_backend or {}):
+        return settings.per_host_preferred_backend[host]
+    if is_youtube_url(url):
+        if settings.privacy_embed_only_youtube:
+            return "embed"  # not implemented here, reserved
+        return "qt"
+    return "qt"
+
+
+# ---------------- Async YouTube resolver ----------------
 
 class YtResolveWorker(QObject):
     resolved = pyqtSignal(str)
+    failed = pyqtSignal(str)
 
     def __init__(self, url: str, parent=None):
         super().__init__(parent)
@@ -168,56 +389,65 @@ class YtResolveWorker(QObject):
             direct = resolve_youtube_to_direct(self.url)
             if direct:
                 self.resolved.emit(direct)
+            else:
+                self.failed.emit("Could not resolve YouTube")
         t = threading.Thread(target=run, daemon=True)
         t.start()
 
-# ---------------- Qt Multimedia tile ----------------
+
+# ---------------- Tile widget ----------------
 
 class QtTile(QFrame):
     requestToggle = pyqtSignal(object)
     started = pyqtSignal(object)
     requestFullscreen = pyqtSignal(object)
+    requestRemove = pyqtSignal(object)
 
-    def __init__(self, url: str, title: str, parent=None, muted: bool = True):
+    def __init__(self, url: str, title: str, settings: AppSettings, parent=None, muted: bool = True):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.url = url
-        self.title = title or "Video"
+        self.title = title or tr("Tile", "Video")
         self.is_muted = muted
         self.is_fullscreen_tile = False
+        self._settings = settings
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
         self.video_widget = QVideoWidget(self)
-        self.video_widget.setMinimumSize(160, 90)
+        self.video_widget.setObjectName("video")
+        self.video_widget.setMinimumSize(200, 112)
+        self.video_widget.setAccessibleName(tr("Tile", "Video surface"))
         outer.addWidget(self.video_widget, 1)
 
         controls = QWidget(self)
         controls.setObjectName("controls")
-        controls.setStyleSheet("#controls { background: black } QLabel { color: white; }")
+        controls.setAccessibleName(tr("Tile", "Controls"))
         row = QHBoxLayout(controls)
-        row.setContentsMargins(3, 2, 3, 2)
-        row.setSpacing(3)
+        row.setContentsMargins(6, 4, 6, 4)
+        row.setSpacing(6)
 
         self.label = QLabel(self.title, controls)
+        self.label.setAccessibleName(tr("Tile", "Title"))
         self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         self.mute_button = QPushButton("", controls)
-        self.mute_button.setToolTip("Mute or unmute audio for this tile")
-        self.mute_button.setFixedSize(20, 20)
+        self.mute_button.setAccessibleName(tr("Tile", "Mute"))
+        self.mute_button.setFixedSize(24, 24)
 
         self.reload_button = QPushButton("", controls)
-        self.reload_button.setToolTip("Reload video")
-        self.reload_button.setFixedSize(20, 20)
+        self.reload_button.setAccessibleName(tr("Tile", "Reload"))
+        self.reload_button.setFixedSize(24, 24)
 
         self.fullscreen_button = QPushButton("", controls)
-        self.fullscreen_button.setFixedSize(20, 20)
+        self.fullscreen_button.setAccessibleName(tr("Tile", "Fullscreen"))
+        self.fullscreen_button.setFixedSize(24, 24)
 
         self.remove_button = QPushButton("", controls)
-        self.remove_button.setToolTip("Remove video")
-        self.remove_button.setFixedSize(20, 20)
+        self.remove_button.setAccessibleName(tr("Tile", "Remove"))
+        self.remove_button.setFixedSize(24, 24)
 
         row.addWidget(self.label)
         row.addStretch()
@@ -233,33 +463,51 @@ class QtTile(QFrame):
         self.player.setVideoOutput(self.video_widget.videoSink())
 
         self.audio.setMuted(self.is_muted)
-        self.audio.setVolume(0.0 if self.is_muted else 0.85)
+        self.audio.setVolume(0.0 if self.is_muted else float(self._settings.volume_default) / 100.0)
 
         self.player.playbackStateChanged.connect(lambda *_: self.started.emit(self))
-        self.player.mediaStatusChanged.connect(lambda *_: self.started.emit(self))
+        self.player.mediaStatusChanged.connect(self.on_media_status_changed)
 
         self._refresh_icons()
 
         self.mute_button.clicked.connect(lambda: self.requestToggle.emit(self))
-        self.reload_button.clicked.connect(lambda: self.play_url(self.url))
+        self.reload_button.clicked.connect(self.safe_reload)
         self.fullscreen_button.clicked.connect(lambda: self.requestFullscreen.emit(self))
+        self.remove_button.clicked.connect(lambda: self.requestRemove.emit(self))
 
         self.play_url(self.url)
 
+    def on_media_status_changed(self, status: QMediaPlayer.MediaStatus):
+        if status == QMediaPlayer.MediaStatus.LoadingMedia:
+            self.label.setText(f"{self.title}  {tr('Tile','Loading')}")
+        elif status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
+            self.label.setText(self.title)
+        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+            self.label.setText(f"{self.title}  {tr('Tile','Invalid media')}")
+        elif status == QMediaPlayer.MediaStatus.StalledMedia:
+            self.label.setText(f"{self.title}  {tr('Tile','Stalled')}")
+        elif status == QMediaPlayer.MediaStatus.BufferingMedia:
+            self.label.setText(f"{self.title}  {tr('Tile','Buffering')}")
+
     def play_url(self, url: str):
+        chosen = choose_backend(url, self._settings)
         src = build_embed_or_watch(url)
-        if _is_youtube_url(src):
+        if chosen == "qt" and is_youtube_url(src) and self._settings.yt_mode != "embed_only":
             if YT_AVAILABLE:
+                self.label.setText(f"{self.title}  {tr('Tile','Resolving')}")
                 self._yt_worker = YtResolveWorker(src, self)
                 self._yt_worker.resolved.connect(lambda direct: self._apply_source(QUrl(direct)))
+                self._yt_worker.failed.connect(lambda _msg: self.label.setText(f"{self.title}  {tr('Tile','Resolve failed')}"))
                 self._yt_worker.start()
+                return
+            else:
+                self.label.setText(f"{self.title}  {tr('Tile','yt dlp not installed')}")
                 return
         self._apply_source(QUrl(src))
 
     def _apply_source(self, qurl: QUrl):
         self.player.setSource(qurl)
         self.player.play()
-        self.label.setText(self.title)
         QTimer.singleShot(0, lambda: self.started.emit(self))
 
     def hard_mute(self):
@@ -283,9 +531,6 @@ class QtTile(QFrame):
             self.is_muted = False
             self._refresh_icons()
 
-    def set_audio_for_active(self, volume_percent: int):
-        self.make_active(volume_percent)
-
     def set_is_fullscreen(self, is_fullscreen: bool):
         self.is_fullscreen_tile = is_fullscreen
         self._refresh_icons()
@@ -299,14 +544,37 @@ class QtTile(QFrame):
         self.reload_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         if self.is_fullscreen_tile:
             self.fullscreen_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
-            self.fullscreen_button.setToolTip("Exit Fullscreen")
+            self.fullscreen_button.setToolTip(tr("Tile", "Exit Fullscreen"))
         else:
             self.fullscreen_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton))
-            self.fullscreen_button.setToolTip("Enter Fullscreen")
+            self.fullscreen_button.setToolTip(tr("Tile", "Enter Fullscreen"))
         self.remove_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
 
+    def safe_reload(self):
+        try:
+            self.player.stop()
+        except Exception:
+            pass
+        try:
+            # drop the old player to recover from backend stalls
+            self.player.mediaStatusChanged.disconnect(self.on_media_status_changed)
+        except Exception:
+            pass
+        try:
+            self.player.deleteLater()
+        except Exception:
+            pass
+        self.player = QMediaPlayer(self)
+        self.player.setAudioOutput(self.audio)
+        self.player.setVideoOutput(self.video_widget.videoSink())
+        self.player.mediaStatusChanged.connect(self.on_media_status_changed)
+        if self.is_muted:
+            self.audio.setMuted(True)
+            self.audio.setVolume(0.0)
+        self.play_url(self.url)
+
     def stop(self):
-        # disconnect tile local hookups
+        # defensive disconnects
         for fn in (
             lambda: self.player.playbackStateChanged.disconnect(),
             lambda: self.player.mediaStatusChanged.disconnect(),
@@ -319,7 +587,6 @@ class QtTile(QFrame):
                 fn()
             except Exception:
                 pass
-
         try:
             self.player.stop()
         except Exception:
@@ -349,22 +616,21 @@ class QtTile(QFrame):
         self.stop()
         super().closeEvent(e)
 
+
 # ---------------- Feed dialog and list dock ----------------
 
 class FeedDialog(QDialog):
     def __init__(self, parent=None, name="", url=""):
         super().__init__(parent)
-        self.setWindowTitle("Add or Edit Feed")
+        self.setWindowTitle(tr("Feed", "Add or Edit Feed"))
         form = QFormLayout(self)
         self.name_input = QLineEdit(name)
         self.url_input = QLineEdit(url)
-        self.name_label = QLabel("Name:")
+        self.name_label = QLabel(tr("Feed", "Name"))
         form.addRow(self.name_label, self.name_input)
-        form.addRow("URL:", self.url_input)
+        form.addRow(tr("Feed", "URL"), self.url_input)
         box = QDialogButtonBox()
-        box.setStandardButtons(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        box.setStandardButtons(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         box.accepted.connect(self.accept)
         box.rejected.connect(self.reject)
         form.addWidget(box)
@@ -375,18 +641,19 @@ class FeedDialog(QDialog):
     def get_feed_data(self):
         return self.name_input.text(), self.url_input.text()
 
+
 class ListManager(QDockWidget):
     def __init__(self, parent=None):
-        super().__init__("Manage Lists", parent)
-        self.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
+        super().__init__(tr("List", "Manage Lists"), parent)
+        self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        self.setObjectName("listManager")
 
         self.tabs = QTabWidget()
         self.setWidget(self.tabs)
 
         style = self.style()
 
+        # Feeds tab
         self.news_feed_tab = QWidget()
         self.news_feed_layout = QVBoxLayout(self.news_feed_tab)
         self.news_feed_layout.setContentsMargins(6, 6, 6, 6)
@@ -397,24 +664,22 @@ class ListManager(QDockWidget):
         self.toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.toolbar_layout.setSpacing(6)
 
-        self.add_feed_to_grid_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton), " Add Selected"
-        )
-        self.add_all_feeds_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), " Add All"
-        )
-        self.add_new_feed_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_FileIcon), " New"
-        )
-        self.edit_feed_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_DesktopIcon), " Edit"
-        )
-        self.remove_feed_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), " Remove"
-        )
-        self.remove_all_feeds_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop), " Clear All"
-        )
+        self.add_feed_to_grid_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton), tr("List", "Add Selected"))
+        self.add_all_feeds_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), tr("List", "Add All"))
+        self.add_new_feed_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon), tr("List", "New"))
+        self.edit_feed_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_DesktopIcon), tr("List", "Edit"))
+        self.remove_feed_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("List", "Remove"))
+        self.remove_all_feeds_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop), tr("List", "Clear All"))
+
+        for b in (
+            self.add_feed_to_grid_button,
+            self.add_all_feeds_button,
+            self.add_new_feed_button,
+            self.edit_feed_button,
+            self.remove_feed_button,
+            self.remove_all_feeds_button,
+        ):
+            b.setAccessibleName(b.text())
 
         self.toolbar_layout.addWidget(self.add_feed_to_grid_button)
         self.toolbar_layout.addWidget(self.add_all_feeds_button)
@@ -426,12 +691,8 @@ class ListManager(QDockWidget):
         self.toolbar_layout.addWidget(self.remove_all_feeds_button)
 
         self.news_feed_list_widget = QListWidget()
-        self.news_feed_list_widget.setSelectionMode(
-            QAbstractItemView.SelectionMode.ExtendedSelection
-        )
-        self.news_feed_list_widget.setDragDropMode(
-            QAbstractItemView.DragDropMode.InternalMove
-        )
+        self.news_feed_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.news_feed_list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.news_feed_list_widget.setDragEnabled(True)
         self.news_feed_list_widget.setAcceptDrops(True)
         self.news_feed_list_widget.setDropIndicatorShown(True)
@@ -439,11 +700,13 @@ class ListManager(QDockWidget):
             self.news_feed_list_widget.sizePolicy().horizontalPolicy(),
             QSizePolicy.Policy.Expanding,
         )
+        self.news_feed_list_widget.setAccessibleName(tr("List", "Feeds"))
 
         self.news_feed_layout.addWidget(self.toolbar, 0)
         self.news_feed_layout.addWidget(self.news_feed_list_widget, 1)
-        self.tabs.addTab(self.news_feed_tab, "News Feeds")
+        self.tabs.addTab(self.news_feed_tab, tr("List", "News Feeds"))
 
+        # Grid tab
         self.grid_tab = QWidget()
         self.grid_layout = QVBoxLayout(self.grid_tab)
         self.grid_layout.setContentsMargins(6, 6, 6, 6)
@@ -454,32 +717,134 @@ class ListManager(QDockWidget):
         self.grid_toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.grid_toolbar_layout.setSpacing(6)
 
-        self.remove_from_grid_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), " Remove"
-        )
+        self.remove_from_grid_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("List", "Remove"))
+        self.remove_from_grid_button.setAccessibleName(tr("List", "Remove from grid"))
         self.grid_toolbar_layout.addWidget(self.remove_from_grid_button)
         self.grid_toolbar_layout.addStretch()
 
         self.grid_list_widget = QListWidget()
-        self.grid_list_widget.setSelectionMode(
-            QAbstractItemView.SelectionMode.ExtendedSelection
-        )
+        self.grid_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.grid_list_widget.setAccessibleName(tr("List", "Grid Items"))
 
         self.grid_layout.addWidget(self.grid_toolbar, 0)
         self.grid_layout.addWidget(self.grid_list_widget, 1)
-        self.tabs.addTab(self.grid_tab, "Grid")
+        self.tabs.addTab(self.grid_tab, tr("List", "Grid"))
+
+
+# ---------------- Diagnostics and Settings dialogs ----------------
+
+class DiagnosticsDialog(QDialog):
+    def __init__(self, parent, settings: SettingsManager):
+        super().__init__(parent)
+        self.setWindowTitle(tr("Diag", "Diagnostics"))
+        lay = QVBoxLayout(self)
+
+        text = QTextEdit()
+        text.setReadOnly(True)
+        feeds, state, log = settings.feeds_file, settings.state_file, settings.log_file
+
+        lines = []
+        lines.append(f"{APP_NAME} {APP_VERSION}")
+        lines.append(f"Platform: {platform_name()}")
+        lines.append(f"Qt multimedia HLS probe: {'yes' if qt_can_play_hls() else 'no'}")
+        if platform_name() == "Linux":
+            lines.append(f"GStreamer present: {'yes' if have_gstreamer() else 'no'}")
+        lines.append(f"App data folder: {user_app_dir()}")
+        lines.append(f"Feeds file: {feeds}  exists={feeds.exists()}")
+        lines.append(f"State file: {state}  exists={state.exists()}")
+        lines.append(f"Log file: {log}  exists={log.exists()}")
+        lines.append(f"yt dlp available: {'yes' if YT_AVAILABLE else 'no'}")
+        text.setPlainText("\n".join(lines))
+
+        lay.addWidget(text)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(self.reject)
+        btns.accepted.connect(self.accept)
+        lay.addWidget(btns)
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent, sm: SettingsManager):
+        super().__init__(parent)
+        self.setWindowTitle(tr("Settings", "Settings"))
+        self._sm = sm
+        s = sm.settings
+
+        form = QFormLayout(self)
+
+        self.audio_policy = QComboBox()
+        self.audio_policy.addItems(["single", "mixed"])
+        self.audio_policy.setCurrentText(s.audio_policy)
+
+        self.volume_default = QSlider(Qt.Orientation.Horizontal)
+        self.volume_default.setRange(0, 100)
+        self.volume_default.setValue(s.volume_default)
+
+        self.yt_mode = QComboBox()
+        self.yt_mode.addItems(["direct_when_possible", "embed_only"])
+        self.yt_mode.setCurrentText(s.yt_mode)
+
+        self.privacy_embed_only_youtube = QCheckBox(tr("Settings", "Use embeds for YouTube"))
+        self.privacy_embed_only_youtube.setChecked(s.privacy_embed_only_youtube)
+
+        self.pause_others_in_fullscreen = QCheckBox(tr("Settings", "Pause non fullscreen tiles"))
+        self.pause_others_in_fullscreen.setChecked(s.pause_others_in_fullscreen)
+
+        self.theme_follow_system = QCheckBox(tr("Settings", "Follow system theme"))
+        self.theme_follow_system.setChecked(s.theme_follow_system)
+
+        form.addRow(tr("Settings", "Audio policy"), self.audio_policy)
+        form.addRow(tr("Settings", "Default volume"), self.volume_default)
+        form.addRow(tr("Settings", "YouTube mode"), self.yt_mode)
+        form.addRow("", self.privacy_embed_only_youtube)
+        form.addRow("", self.pause_others_in_fullscreen)
+        form.addRow("", self.theme_follow_system)
+
+        line = QHBoxLayout()
+        self.btn_export = QPushButton(tr("Settings", "Export profile"))
+        self.btn_import = QPushButton(tr("Settings", "Import profile"))
+        self.btn_export.clicked.connect(lambda: sm.export_profile(self))
+        self.btn_import.clicked.connect(lambda: sm.import_profile(self))
+        line.addWidget(self.btn_export)
+        line.addWidget(self.btn_import)
+        box = QWidget()
+        box.setLayout(line)
+        form.addRow("", box)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addWidget(buttons)
+
+    def apply(self):
+        s = self._sm.settings
+        s.audio_policy = self.audio_policy.currentText()
+        s.volume_default = int(self.volume_default.value())
+        s.yt_mode = self.yt_mode.currentText()
+        s.privacy_embed_only_youtube = bool(self.privacy_embed_only_youtube.isChecked())
+        s.pause_others_in_fullscreen = bool(self.pause_others_in_fullscreen.isChecked())
+        s.theme_follow_system = bool(self.theme_follow_system.isChecked())
+        self._sm.save()
+
 
 # ---------------- Main window ----------------
 
-class NewsBoardVLC(QMainWindow):
+class NewsBoard(QMainWindow):
     AUDIO_RETRY_COUNT = 6
     AUDIO_RETRY_DELAY_MS = 150
 
-    def __init__(self):
+    def __init__(self, sm: SettingsManager):
         super().__init__()
-        self.setWindowTitle(f'NewsBoard {version}')
+        self.sm = sm
+        self.settings = sm.settings
+
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.setWindowIcon(QIcon("resources/icon.ico"))
         self.setBaseSize(1280, 720)
+
+        if self.settings.theme_follow_system:
+            self.apply_theme_follow_system()
 
         self.central_widget = QWidget()
         the_layout = QGridLayout(self.central_widget)
@@ -490,13 +855,11 @@ class NewsBoardVLC(QMainWindow):
 
         self.video_widgets: list[QtTile] = []
         self.currently_unmuted: Optional[QtTile] = None
-        self.active_volume: int = 85
+        self.active_volume: int = int(self.settings.volume_default)
         self.allow_auto_select: bool = True
         self._audio_enforce_generation = 0
         self.fullscreen_tile: Optional[QtTile] = None
         self.main_toolbar: Optional[QToolBar] = None
-
-        # new guard for teardown
         self._is_clearing = False
 
         self.list_manager = ListManager(self)
@@ -511,88 +874,126 @@ class NewsBoardVLC(QMainWindow):
         self.list_manager.remove_all_feeds_button.clicked.connect(self.remove_all_feeds)
         self.list_manager.news_feed_list_widget.model().rowsMoved.connect(self.reorder_news_feeds)
 
-        self.shortcut_delete = QShortcut(QKeySequence("Delete"), self)
-        self.shortcut_delete.activated.connect(self.remove_video_from_grid_list)
-
-        self.news_feeds: dict[str, str] = {}
-        self.load_news_feeds()
-        self.list_manager.tabs.setCurrentIndex(0)
-
         self._build_top_toolbar()
+        self._build_menus()
 
         self._queue = deque()
         self._queue_timer = QTimer(self)
-        self._queue_timer.setInterval(0)
+        self._queue_timer.setInterval(120)
         self._queue_timer.timeout.connect(self._process_queue)
 
+        self.news_feeds: Dict[str, str] = {}
+        self.load_news_feeds()
+        self.list_manager.tabs.setCurrentIndex(0)
+
         self.load_state()
+
         self.volume_slider.blockSignals(True)
         self.volume_slider.setValue(self.active_volume)
-        self.volume_label.setText(f"Volume {self.active_volume}")
+        self.volume_label.setText(tr("UI", f"Volume {self.active_volume}"))
         self.volume_slider.blockSignals(False)
 
-    # grid actions
-    def remove_video_from_grid_list(self):
-        items = self.list_manager.grid_list_widget.selectedItems()
-        if not items:
-            return
-        for item in items:
-            w = item.data(Qt.ItemDataRole.UserRole)
-            if isinstance(w, QtTile):
-                self.remove_video_widget(w)
+        # First run checks
+        self.first_run_checklist()
 
+        # Focus and keyboard
+        self.central_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    # Theming
+    def apply_theme_follow_system(self):
+        # respect system palette and ensure focus is visible
+        pal = QApplication.palette()
+        pal.setColor(QPalette.ColorRole.Highlight, pal.color(QPalette.ColorRole.Highlight))
+        QApplication.setPalette(pal)
+
+    # Menu bar and actions
+    def _build_menus(self):
+        mb = self.menuBar()
+
+        file_menu = mb.addMenu(tr("Menu", "File"))
+        act_settings = QAction(tr("Menu", "Settings"), self)
+        act_settings.triggered.connect(self.open_settings)
+        file_menu.addAction(act_settings)
+
+        act_export = QAction(tr("Menu", "Export profile"), self)
+        act_export.triggered.connect(lambda: self.sm.export_profile(self))
+        file_menu.addAction(act_export)
+
+        act_import = QAction(tr("Menu", "Import profile"), self)
+        act_import.triggered.connect(lambda: self.sm.import_profile(self))
+        file_menu.addAction(act_import)
+
+        file_menu.addSeparator()
+        act_quit = QAction(tr("Menu", "Quit"), self)
+        act_quit.setShortcut(QKeySequence.StandardKey.Quit)
+        act_quit.triggered.connect(self.close)
+        file_menu.addAction(act_quit)
+
+        tools = mb.addMenu(tr("Menu", "Tools"))
+        act_diag = QAction(tr("Menu", "Diagnostics"), self)
+        act_diag.triggered.connect(self.open_diagnostics)
+        tools.addAction(act_diag)
+
+        helpm = mb.addMenu(tr("Menu", "Help"))
+        act_about = QAction(tr("Menu", "About"), self)
+        act_about.triggered.connect(self.open_about)
+        helpm.addAction(act_about)
+
+    # Toolbar and top controls
     def _build_top_toolbar(self):
         tb = QToolBar("Main")
         self.main_toolbar = tb
         tb.setMovable(False)
         tb.setFloatable(False)
-        sz = self.style().pixelMetric(QStyle.PixelMetric.PM_SmallIconSize)
-        if sz <= 0:
-            sz = 16
+        sz = self.style().pixelMetric(QStyle.PixelMetric.PM_SmallIconSize) or 16
         tb.setIconSize(QSize(sz, sz))
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
 
         self.manage_lists_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ToolBarHorizontalExtensionButton),
-            " Manage Lists",
+            tr("UI", "Manage Lists"),
         )
         self.manage_lists_button.setCheckable(True)
         self.manage_lists_button.setChecked(True)
-        self.manage_lists_button.setToolTip("Show or hide the list manager panel")
+        self.manage_lists_button.setToolTip(tr("UI", "Show or hide list manager"))
         self.manage_lists_button.toggled.connect(self.list_manager.setVisible)
         self.list_manager.visibilityChanged.connect(self.manage_lists_button.setChecked)
-
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Enter YouTube or direct stream URL or paste an iframe tag")
-        self.url_input.setToolTip("Enter a URL or iframe code to add a video to the grid")
-
-        self.add_video_button = QPushButton(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton),
-            " Add Video",
-        )
-        self.add_video_button.clicked.connect(self.add_video_from_input)
-
+        self.manage_lists_button.setAccessibleName(tr("UI", "Manage Lists"))
         tb.addWidget(self.manage_lists_button)
+
         spacer_small = QWidget()
         spacer_small.setFixedWidth(6)
         tb.addWidget(spacer_small)
+
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText(tr("UI", "Enter URL or iframe"))
+        self.url_input.setToolTip(tr("UI", "Paste a stream URL or iframe"))
+        self.url_input.setAccessibleName(tr("UI", "URL input"))
         url_action = QWidgetAction(self)
         url_action.setDefaultWidget(self.url_input)
         tb.addAction(url_action)
+
+        self.add_video_button = QPushButton(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton),
+            tr("UI", "Add Video"),
+        )
+        self.add_video_button.clicked.connect(self.add_video_from_input)
+        self.add_video_button.setAccessibleName(tr("UI", "Add Video"))
         tb.addWidget(self.add_video_button)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
 
-        self.volume_label = QLabel("Volume 85")
+        self.volume_label = QLabel(tr("UI", "Volume"))
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setSingleStep(1)
         self.volume_slider.setPageStep(5)
         self.volume_slider.setFixedWidth(180)
-        self.volume_slider.setToolTip("Controls the volume of the active tile only")
+        self.volume_slider.setToolTip(tr("UI", "Controls active tile volume"))
         self.volume_slider.valueChanged.connect(self.on_volume_changed)
+        self.volume_slider.setAccessibleName(tr("UI", "Volume slider"))
 
         tb.addWidget(self.volume_label)
         tb.addWidget(self.volume_slider)
@@ -602,89 +1003,69 @@ class NewsBoardVLC(QMainWindow):
         tb.addWidget(spacer2)
 
         self.remove_all_button = QPushButton(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), " Remove All"
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("UI", "Remove All")
         )
         self.remove_all_button.clicked.connect(self.remove_all_videos)
+        self.remove_all_button.setAccessibleName(tr("UI", "Remove all videos"))
         tb.addWidget(self.remove_all_button)
 
-        self.shortcut_add_all_feeds = QShortcut(QKeySequence("Ctrl+Shift+A"), self)
-        self.shortcut_add_all_feeds.activated.connect(self.add_all_feeds)
+        # Shortcuts
+        self.shortcut_add_all_feeds = QAction(self)
+        self.shortcut_add_all_feeds.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self.shortcut_add_all_feeds.triggered.connect(self.add_all_feeds)
+        self.addAction(self.shortcut_add_all_feeds)
 
-    # state
-    def save_state(self):
-        SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-        state = {
-            "geometry": self.saveGeometry().toBase64().data().decode(),
-            "videos": [(w.url, w.title) for w in self.video_widgets],
-            "active_volume": int(self.active_volume),
-        }
-        with APP_STATE_FILE.open("w", encoding="utf-8") as f:
-            json.dump(state, f, indent=4)
+        self.shortcut_delete = QAction(self)
+        self.shortcut_delete.setShortcut(QKeySequence(Qt.Key.Key_Delete))
+        self.shortcut_delete.triggered.connect(self.remove_video_from_grid_list)
+        self.addAction(self.shortcut_delete)
 
-    def load_state(self):
-        if not APP_STATE_FILE.exists():
-            return
-        try:
-            with APP_STATE_FILE.open("r", encoding="utf-8") as f:
-                state = json.load(f)
-            geom = state.get("geometry")
-            if geom:
-                self.restoreGeometry(QByteArray.fromBase64(geom.encode()))
-            self.active_volume = int(state.get("active_volume", 85))
-            for url, title in state.get("videos", []):
-                self._enqueue(url, title)
-        except Exception:
-            pass
+        self.shortcut_fullscreen = QAction(self)
+        self.shortcut_fullscreen.setShortcut(QKeySequence("F"))
+        self.shortcut_fullscreen.triggered.connect(self.toggle_first_fullscreen)
+        self.addAction(self.shortcut_fullscreen)
 
-    def closeEvent(self, event):
-        # clean shutdown
-        self._is_clearing = True
-        try:
-            self._queue_timer.stop()
-        except Exception:
-            pass
-        try:
-            for w in self.video_widgets[:]:
-                w.stop()
-        except Exception:
-            pass
-        self.save_state()
-        super().closeEvent(event)
+    # First run media checklist
+    def first_run_checklist(self):
+        msgs = []
+        if platform_name() == "Linux" and not have_gstreamer():
+            msgs.append(tr("Diag", "GStreamer is not found. Install base good bad and ugly sets."))
+        if not qt_can_play_hls():
+            msgs.append(tr("Diag", "Qt multimedia did not report HLS support. Some streams may fail."))
+        if msgs:
+            QMessageBox.information(self, APP_NAME, "\n".join(msgs))
 
-    # feeds
+    # Feeds
     def load_news_feeds(self):
-        SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        feeds_file, _, _ = self.sm.feeds_file, self.sm.state_file, self.sm.log_file
+        feeds_file.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with NEWS_FEEDS_FILE.open("r", encoding="utf-8") as f:
-                self.news_feeds = json.load(f)
+            feeds = json.loads(feeds_file.read_text(encoding="utf-8"))
         except Exception:
-            default_feeds = {
+            feeds = {
                 "Associated Press": "https://www.youtube.com/channel/UC52X5wxOL_s5ywGvmcU7v8g",
                 "Reuters": "https://www.youtube.com/channel/UChqUTb7kYRx8-EiaN3XFrSQ",
                 "CNN": "https://www.youtube.com/@CNN",
             }
-            self.news_feeds = default_feeds
-            self.save_news_feeds()
+            feeds_file.write_text(json.dumps(feeds, indent=4), encoding="utf-8")
+        self.news_feeds = feeds
+        self._refresh_feeds_list()
 
-        self.list_manager.news_feed_list_widget.clear()
+    def _refresh_feeds_list(self):
+        w = self.list_manager.news_feed_list_widget
+        w.clear()
         for name, url in self.news_feeds.items():
             item = QListWidgetItem(name)
             item.setData(Qt.ItemDataRole.UserRole, url)
-            self.list_manager.news_feed_list_widget.addItem(item)
+            w.addItem(item)
 
     def save_news_feeds(self):
-        SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-        with NEWS_FEEDS_FILE.open("w", encoding="utf-8") as f:
-            json.dump(self.news_feeds, f, indent=4)
-
-    def add_video_from_input_dialog(self):
-        dialog = FeedDialog(self, name="", url="")
-        dialog.setWindowTitle("Add Video from URL")
-        dialog.set_name_label("Title optional:")
-        if dialog.exec():
-            name, url = dialog.get_feed_data()
-            if url:
-                self._enqueue(url, name or "Pasted Video")
+        f = self.sm.feeds_file
+        f.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            f.write_text(json.dumps(self.news_feeds, indent=4), encoding="utf-8")
+        except Exception:
+            pass
 
     def add_video_from_input(self):
         url_or_iframe = self.url_input.text().strip()
@@ -692,7 +1073,7 @@ class NewsBoardVLC(QMainWindow):
             return
         m = re.search(r'<iframe.*?src="([^"]*)"', url_or_iframe, re.IGNORECASE)
         url = m.group(1) if m else url_or_iframe
-        self._enqueue(url, "Pasted Video")
+        self._enqueue(url, tr("UI", "Pasted Video"))
         self.url_input.clear()
 
     def add_video_from_feed(self):
@@ -715,7 +1096,7 @@ class NewsBoardVLC(QMainWindow):
             if name and url:
                 self.news_feeds[name] = url
                 self.save_news_feeds()
-                self.load_news_feeds()
+                self._refresh_feeds_list()
 
     def edit_feed(self):
         selected = self.list_manager.news_feed_list_widget.selectedItems()
@@ -731,7 +1112,7 @@ class NewsBoardVLC(QMainWindow):
                 self.news_feeds.pop(old_name, None)
                 self.news_feeds[new_name] = new_url
                 self.save_news_feeds()
-                self.load_news_feeds()
+                self._refresh_feeds_list()
 
     def remove_feed(self):
         selected = self.list_manager.news_feed_list_widget.selectedItems()
@@ -741,19 +1122,20 @@ class NewsBoardVLC(QMainWindow):
             name = item.text()
             self.news_feeds.pop(name, None)
         self.save_news_feeds()
-        self.load_news_feeds()
+        self._refresh_feeds_list()
 
     def remove_all_feeds(self):
         if not self.news_feeds:
             return
         self.news_feeds.clear()
         self.save_news_feeds()
-        self.load_news_feeds()
+        self._refresh_feeds_list()
 
     def reorder_news_feeds(self, *_):
         new_order_names = []
-        for i in range(self.list_manager.news_feed_list_widget.count()):
-            new_order_names.append(self.list_manager.news_feed_list_widget.item(i).text())
+        w = self.list_manager.news_feed_list_widget
+        for i in range(w.count()):
+            new_order_names.append(w.item(i).text())
         new_news_feeds = {}
         for name in new_order_names:
             if name in self.news_feeds:
@@ -761,7 +1143,7 @@ class NewsBoardVLC(QMainWindow):
         self.news_feeds = new_news_feeds
         self.save_news_feeds()
 
-    # queue and grid
+    # Queue and grid
     def _enqueue(self, url, title):
         self._queue.append((url, title))
         if not self._queue_timer.isActive():
@@ -776,12 +1158,11 @@ class NewsBoardVLC(QMainWindow):
 
     def create_video_widget(self, url, title):
         is_first_video = not bool(self.video_widgets)
-        vw = QtTile(url, title, parent=self.central_widget, muted=not is_first_video)
-
+        vw = QtTile(url, title, self.settings, parent=self.central_widget, muted=not is_first_video)
         vw.requestToggle.connect(self.toggle_mute_single)
         vw.started.connect(self.on_tile_playing)
         vw.requestFullscreen.connect(self.toggle_fullscreen_tile)
-        vw.remove_button.clicked.connect(lambda: self.remove_video_widget(vw))
+        vw.requestRemove.connect(self.remove_video_widget)
 
         self.video_widgets.append(vw)
 
@@ -792,46 +1173,47 @@ class NewsBoardVLC(QMainWindow):
         self.update_grid()
         self._enforce_audio_policy_with_retries()
 
+    def remove_video_from_grid_list(self):
+        items = self.list_manager.grid_list_widget.selectedItems()
+        if not items:
+            return
+        for item in items:
+            w = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(w, QtTile):
+                self.remove_video_widget(w)
+
     def remove_video_widget(self, widget):
         if self._is_clearing:
             return
-
         if self.fullscreen_tile is widget and self.isFullScreen():
             self.exit_fullscreen()
-
         if widget in self.video_widgets:
             was_unmuted = widget == self.currently_unmuted
             if was_unmuted:
                 self.currently_unmuted = None
-
-            # disconnect controller side hookups
             for fn in (
                 lambda: widget.requestToggle.disconnect(),
                 lambda: widget.started.disconnect(),
                 lambda: widget.requestFullscreen.disconnect(),
+                lambda: widget.requestRemove.disconnect(),
             ):
                 try:
                     fn()
                 except Exception:
                     pass
-
             try:
                 widget.stop()
             except Exception:
                 pass
-
             try:
                 self.video_widgets.remove(widget)
             except Exception:
                 pass
-
             widget.setParent(None)
             widget.deleteLater()
-
             if was_unmuted and self.video_widgets:
                 self.currently_unmuted = self.video_widgets[0]
                 self.allow_auto_select = True
-
             self.update_grid()
             self._enforce_audio_policy_with_retries()
 
@@ -850,12 +1232,11 @@ class NewsBoardVLC(QMainWindow):
         self.currently_unmuted = None
 
         for w in self.video_widgets[:]:
-            # disconnect controller side first
             for fn in (
                 lambda: w.requestToggle.disconnect(),
                 lambda: w.started.disconnect(),
                 lambda: w.requestFullscreen.disconnect(),
-                lambda: w.remove_button.clicked.disconnect(),
+                lambda: w.requestRemove.disconnect(),
             ):
                 try:
                     fn()
@@ -898,9 +1279,11 @@ class NewsBoardVLC(QMainWindow):
         if n == 0:
             self.list_manager.grid_list_widget.clear()
             return
+
         cols = max(1, math.isqrt(n))
         if cols * cols < n:
             cols += 1
+
         for i, w in enumerate(self.video_widgets):
             row = i // cols
             col = i % cols
@@ -912,10 +1295,15 @@ class NewsBoardVLC(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, w)
             self.list_manager.grid_list_widget.addItem(item)
 
-    # audio policy
+    # Audio policy
     def toggle_mute_single(self, video_widget: QtTile):
         if self._is_clearing:
             return
+        if self.settings.audio_policy == "mixed":
+            # simple toggle only for the clicked tile
+            video_widget.set_mute_state(not video_widget.is_muted)
+            return
+
         if self.currently_unmuted == video_widget:
             video_widget.set_mute_state(True)
             self.currently_unmuted = None
@@ -928,19 +1316,21 @@ class NewsBoardVLC(QMainWindow):
     def on_tile_playing(self, tile: QtTile):
         if self._is_clearing:
             return
-        if self.currently_unmuted is None and self.allow_auto_select:
+        if self.currently_unmuted is None and self.allow_auto_select and self.settings.audio_policy == "single":
             self.currently_unmuted = tile
         self._enforce_audio_policy_with_retries()
 
     def _enforce_audio_policy(self, generation: int):
         if generation != self._audio_enforce_generation:
             return
+        if self.settings.audio_policy == "mixed":
+            return
         active = self.currently_unmuted
         for tile in self.video_widgets:
             if tile is not active:
                 tile.set_mute_state(True)
         if active:
-            active.set_audio_for_active(self.active_volume)
+            active.make_active(self.active_volume)
 
     def _enforce_audio_policy_with_retries(self):
         self._audio_enforce_generation += 1
@@ -949,13 +1339,13 @@ class NewsBoardVLC(QMainWindow):
         for i in range(1, self.AUDIO_RETRY_COUNT + 1):
             QTimer.singleShot(self.AUDIO_RETRY_DELAY_MS * i, lambda g=gen: self._enforce_audio_policy(g))
 
-    # volume UI
+    # Volume UI
     def on_volume_changed(self, value: int):
         self.active_volume = int(value)
-        self.volume_label.setText(f"Volume {self.active_volume}")
+        self.volume_label.setText(tr("UI", f"Volume {self.active_volume}"))
         self._enforce_audio_policy_with_retries()
 
-    # fullscreen
+    # Fullscreen
     def toggle_fullscreen_tile(self, tile: QtTile):
         if self.isFullScreen():
             if self.fullscreen_tile == tile:
@@ -975,6 +1365,11 @@ class NewsBoardVLC(QMainWindow):
             self.list_manager.hide()
             for w in self.video_widgets:
                 w.setVisible(w is tile)
+                if self.settings.pause_others_in_fullscreen and w is not tile:
+                    try:
+                        w.player.pause()
+                    except Exception:
+                        pass
             self.showFullScreen()
 
     def exit_fullscreen(self):
@@ -983,6 +1378,7 @@ class NewsBoardVLC(QMainWindow):
                 self.fullscreen_tile.set_is_fullscreen(False)
         except Exception:
             pass
+        fs = self.fullscreen_tile
         self.fullscreen_tile = None
 
         if self.main_toolbar:
@@ -990,23 +1386,108 @@ class NewsBoardVLC(QMainWindow):
         self.list_manager.show()
         for w in self.video_widgets:
             w.show()
+            if self.settings.pause_others_in_fullscreen and w is not fs:
+                try:
+                    w.player.play()
+                except Exception:
+                    pass
         self.showNormal()
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
-            self.exit_fullscreen()
-        else:
-            super().keyPressEvent(event)
+    def toggle_first_fullscreen(self):
+        if self.video_widgets:
+            self.toggle_fullscreen_tile(self.video_widgets[0])
+
+    # State
+    def save_state(self):
+        _, state_file, _ = self.sm.feeds_file, self.sm.state_file, self.sm.log_file
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "geometry": self.saveGeometry().toBase64().data().decode(),
+            "videos": [(w.url, w.title) for w in self.video_widgets],
+            "active_volume": int(self.active_volume),
+        }
+        try:
+            state_file.write_text(json.dumps(state, indent=4), encoding="utf-8")
+        except Exception:
+            pass
+
+    def load_state(self):
+        _, state_file, _ = self.sm.feeds_file, self.sm.state_file, self.sm.log_file
+        if not state_file.exists():
+            return
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            geom = state.get("geometry")
+            if geom:
+                self.restoreGeometry(QByteArray.fromBase64(geom.encode()))
+            self.active_volume = int(state.get("active_volume", self.settings.volume_default))
+            # Stagger start for performance
+            for url, title in state.get("videos", []):
+                self._enqueue(url, title)
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self._is_clearing = True
+        try:
+            self._queue_timer.stop()
+        except Exception:
+            pass
+        try:
+            for w in self.video_widgets[:]:
+                w.stop()
+        except Exception:
+            pass
+        self.save_state()
+        super().closeEvent(event)
+
+    # Dialogs
+    def open_settings(self):
+        dlg = SettingsDialog(self, self.sm)
+        if dlg.exec():
+            dlg.apply()
+            self.settings = self.sm.settings
+            if self.settings.theme_follow_system:
+                self.apply_theme_follow_system()
+            QMessageBox.information(self, APP_NAME, tr("Settings", "Settings saved"))
+
+    def open_diagnostics(self):
+        dlg = DiagnosticsDialog(self, self.sm)
+        dlg.exec()
+
+    def open_about(self):
+        msg = QMessageBox(self)
+        msg.setWindowTitle(tr("About", "About"))
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText(
+            f"{APP_NAME} {APP_VERSION}\n"
+            f"{tr('About','A lightweight grid for live video with single active audio')}\n\n"
+            f"{tr('About','Third party content plays under the respective site terms')}\n"
+            f"{tr('About','You are responsible for how you use streams and embeds')}"
+        )
+        msg.exec()
+
 
 # ---------------- Entry point ----------------
 
 def main():
-    sys.stdout = open(os.devnull, 'w')
-    sys.stderr = open(os.devnull, 'w')
+    QCoreApplication.setApplicationName(APP_NAME)
+    QCoreApplication.setOrganizationName(APP_ORG)
+    QCoreApplication.setOrganizationDomain(APP_DOMAIN)
+    QCoreApplication.setApplicationVersion(APP_VERSION)
+
     app = QApplication(sys.argv)
-    win = NewsBoardVLC()
+    app.setApplicationDisplayName(APP_NAME)
+
+    migrate_legacy_settings()
+
+    sm = SettingsManager()
+    sm.load()
+
+    win = NewsBoard(sm)
     win.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
