@@ -864,6 +864,7 @@ class NewsBoard(QMainWindow):
         super().__init__()
         self.sm = sm
         self.settings = sm.settings
+        self.window_state_before_fullscreen = None
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.setWindowIcon(QIcon("resources/icon.ico"))
@@ -936,15 +937,15 @@ class NewsBoard(QMainWindow):
 
     # Theming
     def apply_theme(self):
+        app = QApplication.instance()
         if self.settings.theme == "dark":
-            app = QApplication.instance()
             dark_palette = QPalette()
             dark_palette.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0))
             dark_palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
             dark_palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
             dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
             dark_palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
-            dark_palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+            dark_palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.black)
             dark_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
             dark_palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
             dark_palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
@@ -953,8 +954,35 @@ class NewsBoard(QMainWindow):
             dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
             dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
             app.setPalette(dark_palette)
+            app.setStyleSheet("""
+                QToolTip {
+                    color: #ffffff;
+                    background-color: #2a82da;
+                    border: 1px solid white;
+                }
+                QMenuBar {
+                    background-color: #353535;
+                }
+                QMenuBar::item {
+                    background-color: #353535;
+                    color: #ffffff;
+                }
+                QMenuBar::item:selected {
+                    background-color: #2a82da;
+                }
+                QMenu {
+                    background-color: #353535;
+                    border: 1px solid #555555;
+                }
+                QMenu::item {
+                    color: #ffffff;
+                }
+                QMenu::item:selected {
+                    background-color: #2a82da;
+                }
+            """)
         else:
-            app = QApplication.instance()
+            app.setStyleSheet("")
             app.setPalette(QApplication.style().standardPalette())
 
     # Menu bar and actions
@@ -971,7 +999,7 @@ class NewsBoard(QMainWindow):
         file_menu.addAction(act_export)
 
         act_import = QAction(tr("Menu", "Import profile"), self)
-        act_import.triggered.connect(lambda: self.sm.import_profile(self))
+        act_import.triggered.connect(self.open_settings)  # Re-route to open_settings
         file_menu.addAction(act_import)
 
         file_menu.addSeparator()
@@ -1423,6 +1451,11 @@ class NewsBoard(QMainWindow):
                 self.fullscreen_tile = tile
                 self.fullscreen_tile.set_is_fullscreen(True)
         else:
+            self.window_state_before_fullscreen = {
+                "geometry": self.saveGeometry(),
+                "is_maximized": self.isMaximized(),
+                "list_manager_visible": self.list_manager.isVisible()
+            }
             self.fullscreen_tile = tile
             self.fullscreen_tile.set_is_fullscreen(True)
             if self.main_toolbar:
@@ -1458,7 +1491,6 @@ class NewsBoard(QMainWindow):
             self.volume_label.show()
             self.volume_slider.show()
 
-        self.list_manager.show()
         for w in self.video_widgets:
             w.show()
             if self.settings.pause_others_in_fullscreen and w is not fs:
@@ -1466,7 +1498,17 @@ class NewsBoard(QMainWindow):
                     w.player.play()
                 except Exception:
                     pass
-        self.showNormal()
+
+        self.showNormal()  # Exit fullscreen first
+
+        if self.window_state_before_fullscreen:
+            self.list_manager.setVisible(self.window_state_before_fullscreen["list_manager_visible"])
+            if self.window_state_before_fullscreen["is_maximized"]:
+                self.showMaximized()
+            else:
+                self.restoreGeometry(self.window_state_before_fullscreen["geometry"])
+            self.window_state_before_fullscreen = None
+
         self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton))
 
     def toggle_first_fullscreen(self):
@@ -1477,6 +1519,11 @@ class NewsBoard(QMainWindow):
         if self.isFullScreen():
             self.exit_fullscreen()
         else:
+            self.window_state_before_fullscreen = {
+                "geometry": self.saveGeometry(),
+                "is_maximized": self.isMaximized(),
+                "list_manager_visible": self.list_manager.isVisible()
+            }
             self.manage_lists_button.hide()
             self.url_action.setVisible(False)
             self.add_video_button.hide()
