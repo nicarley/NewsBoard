@@ -49,6 +49,7 @@ from PyQt6.QtGui import (
     QIcon,
     QKeySequence,
     QPalette,
+    QColor,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -253,7 +254,7 @@ class AppSettings:
     per_host_preferred_backend: Dict[str, str] = None  # host to "qt"
     privacy_embed_only_youtube: bool = False
     pause_others_in_fullscreen: bool = True
-    theme_follow_system: bool = True
+    theme: str = "system"
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=4)
@@ -267,7 +268,7 @@ class AppSettings:
         s.per_host_preferred_backend = d.get("per_host_preferred_backend", {}) or {}
         s.privacy_embed_only_youtube = bool(d.get("privacy_embed_only_youtube", s.privacy_embed_only_youtube))
         s.pause_others_in_fullscreen = bool(d.get("pause_others_in_fullscreen", s.pause_others_in_fullscreen))
-        s.theme_follow_system = bool(d.get("theme_follow_system", s.theme_follow_system))
+        s.theme = d.get("theme", s.theme)
         return s
 
 
@@ -799,15 +800,16 @@ class SettingsDialog(QDialog):
         self.pause_others_in_fullscreen = QCheckBox(tr("Settings", "Pause non fullscreen tiles"))
         self.pause_others_in_fullscreen.setChecked(s.pause_others_in_fullscreen)
 
-        self.theme_follow_system = QCheckBox(tr("Settings", "Follow system theme"))
-        self.theme_follow_system.setChecked(s.theme_follow_system)
+        self.theme = QComboBox()
+        self.theme.addItems(["system", "light", "dark"])
+        self.theme.setCurrentText(s.theme)
 
         form.addRow(tr("Settings", "Audio policy"), self.audio_policy)
         form.addRow(tr("Settings", "Default volume"), self.volume_default)
         form.addRow(tr("Settings", "YouTube mode"), self.yt_mode)
+        form.addRow(tr("Settings", "Theme"), self.theme)
         form.addRow("", self.privacy_embed_only_youtube)
         form.addRow("", self.pause_others_in_fullscreen)
-        form.addRow("", self.theme_follow_system)
 
         line = QHBoxLayout()
         self.btn_export = QPushButton(tr("Settings", "Export profile"))
@@ -832,7 +834,7 @@ class SettingsDialog(QDialog):
         s.yt_mode = self.yt_mode.currentText()
         s.privacy_embed_only_youtube = bool(self.privacy_embed_only_youtube.isChecked())
         s.pause_others_in_fullscreen = bool(self.pause_others_in_fullscreen.isChecked())
-        s.theme_follow_system = bool(self.theme_follow_system.isChecked())
+        s.theme = self.theme.currentText()
         self._sm.save()
 
 
@@ -852,10 +854,10 @@ class NewsBoard(QMainWindow):
         self.setWindowIcon(QIcon("resources/icon.ico"))
         self.setBaseSize(1280, 720)
 
-        if self.settings.theme_follow_system:
-            self.apply_theme_follow_system()
+        self.apply_theme()
 
         self.central_widget = QWidget()
+        self.central_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         the_layout = QGridLayout(self.central_widget)
         the_layout.setContentsMargins(0, 0, 0, 0)
         the_layout.setSpacing(4)
@@ -870,6 +872,7 @@ class NewsBoard(QMainWindow):
         self.fullscreen_tile: Optional[QtTile] = None
         self.main_toolbar: Optional[QToolBar] = None
         self._is_clearing = False
+        self.url_action: Optional[QWidgetAction] = None
 
         self.list_manager = ListManager(self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.list_manager)
@@ -909,11 +912,27 @@ class NewsBoard(QMainWindow):
         self.central_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     # Theming
-    def apply_theme_follow_system(self):
-        # respect system palette and ensure focus is visible
-        pal = QApplication.palette()
-        pal.setColor(QPalette.ColorRole.Highlight, pal.color(QPalette.ColorRole.Highlight))
-        QApplication.setPalette(pal)
+    def apply_theme(self):
+        if self.settings.theme == "dark":
+            app = QApplication.instance()
+            dark_palette = QPalette()
+            dark_palette.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0))
+            dark_palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
+            dark_palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
+            dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
+            dark_palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+            dark_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
+            dark_palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
+            dark_palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+            dark_palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+            dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+            dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
+            app.setPalette(dark_palette)
+        else:
+            app = QApplication.instance()
+            app.setPalette(QApplication.style().standardPalette())
 
     # Menu bar and actions
     def _build_menus(self):
@@ -978,9 +997,9 @@ class NewsBoard(QMainWindow):
         self.url_input.setPlaceholderText(tr("UI", "Enter URL or iframe"))
         self.url_input.setToolTip(tr("UI", "Paste a stream URL or iframe"))
         self.url_input.setAccessibleName(tr("UI", "URL input"))
-        url_action = QWidgetAction(self)
-        url_action.setDefaultWidget(self.url_input)
-        tb.addAction(url_action)
+        self.url_action = QWidgetAction(self)
+        self.url_action.setDefaultWidget(self.url_input)
+        tb.addAction(self.url_action)
 
         self.add_video_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton),
@@ -1053,8 +1072,8 @@ class NewsBoard(QMainWindow):
         msgs = []
         if platform_name() == "Linux" and not have_gstreamer():
             msgs.append(tr("Diag", "GStreamer is not found. Install base good bad and ugly sets."))
-        if not qt_can_play_hls():
-            msgs.append(tr("Diag", "Qt multimedia did not report HLS support. Some streams may fail."))
+        # if not qt_can_play_hls():
+        #     msgs.append(tr("Diag", "Qt multimedia did not report HLS support. Some streams may fail."))
         if msgs:
             QMessageBox.information(self, APP_NAME, "\n".join(msgs))
 
@@ -1396,16 +1415,26 @@ class NewsBoard(QMainWindow):
             self.showFullScreen()
 
     def exit_fullscreen(self):
+        was_tile_fullscreen = self.fullscreen_tile is not None
+        fs = self.fullscreen_tile
+
         try:
             if self.fullscreen_tile:
                 self.fullscreen_tile.set_is_fullscreen(False)
         except Exception:
             pass
-        fs = self.fullscreen_tile
         self.fullscreen_tile = None
 
-        if self.main_toolbar:
-            self.main_toolbar.show()
+        if was_tile_fullscreen:
+            if self.main_toolbar:
+                self.main_toolbar.show()
+        else:  # was grid fullscreen
+            self.manage_lists_button.show()
+            self.url_action.setVisible(True)
+            self.add_video_button.show()
+            self.volume_label.show()
+            self.volume_slider.show()
+
         self.list_manager.show()
         for w in self.video_widgets:
             w.show()
@@ -1425,8 +1454,11 @@ class NewsBoard(QMainWindow):
         if self.isFullScreen():
             self.exit_fullscreen()
         else:
-            if self.main_toolbar:
-                self.main_toolbar.hide()
+            self.manage_lists_button.hide()
+            self.url_action.setVisible(False)
+            self.add_video_button.hide()
+            self.volume_label.hide()
+            self.volume_slider.hide()
             self.list_manager.hide()
             self.showFullScreen()
             self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
@@ -1440,7 +1472,6 @@ class NewsBoard(QMainWindow):
         _, state_file, _ = self.sm.feeds_file, self.sm.state_file, self.sm.log_file
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state = {
-            "geometry": self.saveGeometry().toBase64().data().decode(),
             "videos": [(w.url, w.title) for w in self.video_widgets],
             "active_volume": int(self.active_volume),
         }
@@ -1455,9 +1486,6 @@ class NewsBoard(QMainWindow):
             return
         try:
             state = json.loads(state_file.read_text(encoding="utf-8"))
-            geom = state.get("geometry")
-            if geom:
-                self.restoreGeometry(QByteArray.fromBase64(geom.encode()))
             self.active_volume = int(state.get("active_volume", self.settings.volume_default))
             # Stagger start for performance
             for url, title in state.get("videos", []):
@@ -1485,8 +1513,7 @@ class NewsBoard(QMainWindow):
         if dlg.exec():
             dlg.apply()
             self.settings = self.sm.settings
-            if self.settings.theme_follow_system:
-                self.apply_theme_follow_system()
+            self.apply_theme()
             QMessageBox.information(self, APP_NAME, tr("Settings", "Settings saved"))
 
     def open_diagnostics(self):
@@ -1524,7 +1551,7 @@ def main():
     sm.load()
 
     win = NewsBoard(sm)
-    win.show()
+    win.showMaximized()
     sys.exit(app.exec())
 
 
