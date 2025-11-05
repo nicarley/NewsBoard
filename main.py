@@ -104,11 +104,13 @@ APP_VERSION = "2025.11.05"
 
 # ---------------- i18n helpers ----------------
 
+
 def tr(ctx: str, text: str) -> str:
     return QCoreApplication.translate(ctx, text)
 
 
 # ---------------- Cross platform storage ----------------
+
 
 def user_app_dir() -> Path:
     loc = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
@@ -242,6 +244,7 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
 
 # ---------------- Settings model ----------------
 
+
 @dataclass
 class AppSettings:
     audio_policy: str = "single"  # single or mixed
@@ -340,6 +343,7 @@ class SettingsManager:
 
 # ---------------- Capability probe and backend choice ----------------
 
+
 def platform_name() -> str:
     if sys.platform.startswith("win"):
         return "Windows"
@@ -376,6 +380,7 @@ def choose_backend(url: str, settings: AppSettings) -> str:
 
 # ---------------- Async YouTube resolver ----------------
 
+
 class YtResolveWorker(QObject):
     resolved = pyqtSignal(str)
     failed = pyqtSignal(str)
@@ -396,6 +401,7 @@ class YtResolveWorker(QObject):
 
 
 # ---------------- Tile widget ----------------
+
 
 class QtTile(QFrame):
     requestToggle = pyqtSignal(object)
@@ -619,6 +625,7 @@ class QtTile(QFrame):
 
 # ---------------- Feed dialog and list dock ----------------
 
+
 class FeedDialog(QDialog):
     def __init__(self, parent=None, name="", url=""):
         super().__init__(parent)
@@ -733,6 +740,7 @@ class ListManager(QDockWidget):
 
 # ---------------- Diagnostics and Settings dialogs ----------------
 
+
 class DiagnosticsDialog(QDialog):
     def __init__(self, parent, settings: SettingsManager):
         super().__init__(parent)
@@ -829,6 +837,7 @@ class SettingsDialog(QDialog):
 
 
 # ---------------- Main window ----------------
+
 
 class NewsBoard(QMainWindow):
     AUDIO_RETRY_COUNT = 6
@@ -1001,6 +1010,20 @@ class NewsBoard(QMainWindow):
         spacer2 = QWidget()
         spacer2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer2)
+
+        self.fullscreen_button = QPushButton(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton), tr("UI", "Fullscreen")
+        )
+        self.fullscreen_button.clicked.connect(self.toggle_grid_fullscreen)
+        self.fullscreen_button.setAccessibleName(tr("UI", "Toggle Fullscreen"))
+        tb.addWidget(self.fullscreen_button)
+
+        self.reload_all_button = QPushButton(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload), tr("UI", "Reload All")
+        )
+        self.reload_all_button.clicked.connect(self.reload_all_videos)
+        self.reload_all_button.setAccessibleName(tr("UI", "Reload all videos"))
+        tb.addWidget(self.reload_all_button)
 
         self.remove_all_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("UI", "Remove All")
@@ -1392,10 +1415,25 @@ class NewsBoard(QMainWindow):
                 except Exception:
                     pass
         self.showNormal()
+        self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton))
 
     def toggle_first_fullscreen(self):
         if self.video_widgets:
             self.toggle_fullscreen_tile(self.video_widgets[0])
+
+    def toggle_grid_fullscreen(self):
+        if self.isFullScreen():
+            self.exit_fullscreen()
+        else:
+            if self.main_toolbar:
+                self.main_toolbar.hide()
+            self.list_manager.hide()
+            self.showFullScreen()
+            self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
+
+    def reload_all_videos(self):
+        for widget in self.video_widgets:
+            widget.safe_reload()
 
     # State
     def save_state(self):
@@ -1469,6 +1507,7 @@ class NewsBoard(QMainWindow):
 
 
 # ---------------- Entry point ----------------
+
 
 def main():
     QCoreApplication.setApplicationName(APP_NAME)
