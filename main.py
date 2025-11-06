@@ -316,14 +316,14 @@ class SettingsManager:
             try:
                 bundle = json.loads(Path(path).read_text(encoding="utf-8"))
                 settings = bundle.get("settings")
-                if settings:
+                if settings is not None:
                     self.settings = AppSettings.from_dict(settings)
                     self.save()
                 feeds = bundle.get("feeds")
-                if feeds:
+                if feeds is not None:
                     self._write_json(self.feeds_file, feeds)
                 state = bundle.get("state")
-                if state:
+                if state is not None:
                     self._write_json(self.state_file, state)
                 return True
             except Exception as e:
@@ -1096,7 +1096,7 @@ class NewsBoard(QMainWindow):
         file_menu.addAction(act_export)
 
         act_import = QAction(tr("Menu", "Import profile"), self)
-        act_import.triggered.connect(self.open_settings)  # Re-route to open_settings
+        act_import.triggered.connect(self.import_profile_action)
         file_menu.addAction(act_import)
 
         file_menu.addSeparator()
@@ -1215,6 +1215,11 @@ class NewsBoard(QMainWindow):
         self.shortcut_fullscreen.triggered.connect(self.toggle_first_fullscreen)
         self.addAction(self.shortcut_fullscreen)
 
+    def import_profile_action(self):
+        if self.sm.import_profile(self):
+            self.refresh_ui()
+            QMessageBox.information(self, APP_NAME, tr("Settings", "Profile imported and applied."))
+
     # First run media checklist
     def first_run_checklist(self):
         msgs = []
@@ -1233,46 +1238,9 @@ class NewsBoard(QMainWindow):
             feeds = json.loads(feeds_file.read_text(encoding="utf-8"))
         except Exception:
             feeds = {
-                "ABC News": "https://www.youtube.com/@ABCNews/live",
-                "Al Jazeera": "https://www.youtube.com/@aljazeeraenglish/live",
-                "Associated Press": "https://www.youtube.com/@AssociatedPress/live",
-                "Bleacher Report": "https://www.youtube.com/@BleacherReport/live",
-                "Bloomberg Business News": "https://www.youtube.com/@markets/live",
-                "CBS News": "https://www.youtube.com/@CBSNews/live",
-                "CBS News Live": "https://www.youtube.com/live/FTpvdUCMmDE?pp=YADSBwkJwBgBhyohjO8%3D",
-                "CNBC": "https://www.youtube.com/live/9NyxcX3rhQs",
-                "CNBC Television": "https://www.youtube.com/@CNBCtelevision/live",
-                "CNN Live": "https://www.youtube.com/@CNN/streams/live",
-                "ESPN Chicago 1000": "https://www.youtube.com/@ESPN1000Chicago/live",
-                "Forbes Breaking News": "https://www.youtube.com/@ForbesBreakingNews/live",
-                "Fox Business": "https://www.youtube.com/foxbusiness/live",
-                "Fox News Now": "https://www.youtube.com/embed/4nMfRpesYfw?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
-                "Fox Sports": "https://www.youtube.com/@foxsports/live",
-                "Fox Weather": "https://www.youtube.com/@Foxweather/live",
-                "More Max Velocity": "https://www.youtube.com/@MoreMaxVelocity/live",
-                "MSNBC Live": "https://www.youtube.com/@msnbc/live",
-                "NASA ISS": "https://www.youtube.com/@NASA/live",
-                "NASA Sen ISS": "https://www.youtube.com/@Sen/live",
-                "NBC News": "https://www.youtube.com/@NBCNews/live",
-                "PBSNewsHour": "https://www.youtube.com/@PBSNewsHour/live",
-                "SkyNews": "https://www.youtube.com/@SkyNews/live",
-                "The Hill": "https://www.youtube.com/@thehill/live",
-                "TWIT.TV": "https://www.youtube.com/@twit/live",
-                "USA Today Live": "https://www.youtube.com/@USATODAY/live",
-                "ViceNews": "https://www.youtube.com/@VICENews/live",
-                "Yallbot Weather": "https://www.youtube.com/@OfficialYallBot/live",
-                "Wabash CatchTV": "https://www.youtube.com/@WabashCatchTV/live",
-                "Webcam: Allegiant Stadium": "https://www.youtube.com/watch?v=MnyjqGMkzmw",
-                "Webcam: Fort Meyers, FL": "https://www.youtube.com/watch?v=Zg1qEHQP-A4",
-                "Webcam:  Key Largo, FL": "https://www.youtube.com/@FloridaKeysTV/live",
-                "Webcam:  Islamorada, Fl.": "https://www.youtube.com/watch?v=8ShFKuTCmhQ",
-                "Webcam:  Key Largo, Fl. Marina": "https://www.youtube.com/watch?v=cDzoBVvTaEU",
-                "Webcam:  New Orleans": "https://www.youtube.com/watch?v=qHW8srS0ylo",
-                "Webcam:  Times Square": "https://www.youtube.com/embed/rnXIjl_Rzy4?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
-                "WhiteHouse.gov Live": "https://www.youtube.com/@WhiteHouse/live",
-                "WWE Valut": "https://www.youtube.com/@WWEVault/live",
-                "WWE Live": "https://www.youtube.com/@WWE/live",
-                "Yahoo!  Finance": "https://www.youtube.com/@YahooFinance/live"
+                "Associated Press": "https://www.youtube.com/channel/UC52X5wxOL_s5ywGvmcU7v8g",
+                "Reuters": "https://www.youtube.com/channel/UChqUTb7kYRx8-EiaN3XFrSQ",
+                "CNN": "https://www.youtube.com/@CNN",
             }
             feeds_file.write_text(json.dumps(feeds, indent=4), encoding="utf-8")
         self.news_feeds = feeds
