@@ -24,7 +24,6 @@ import re
 import shutil
 import sys
 import threading
-import asyncio
 from collections import deque
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -43,7 +42,7 @@ from PyQt6.QtCore import (
     QSize,
     QObject,
     pyqtSignal,
-    QThread,
+    qInstallMessageHandler,
 )
 from PyQt6.QtGui import (
     QAction,
@@ -99,20 +98,6 @@ try:
     YT_AVAILABLE = True
 except Exception:
     YT_AVAILABLE = False
-
-try:
-    import pychromecast
-
-    CHROMECAST_AVAILABLE = True
-except ImportError:
-    CHROMECAST_AVAILABLE = False
-
-try:
-    import pyatv
-
-    AIRPLAY_AVAILABLE = True
-except ImportError:
-    AIRPLAY_AVAILABLE = False
 
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
@@ -830,138 +815,6 @@ class ListManager(QDockWidget):
         self.tabs.addTab(self.grid_tab, tr("List", "Grid"))
 
 
-# ---------------- Casting ----------------
-
-class ChromecastScanner(QObject):
-    finished = pyqtSignal(list)
-
-    def run(self):
-        try:
-            casts, browser = pychromecast.get_listed_chromecasts(friendly_names=[])
-            devices = sorted(casts, key=lambda c: c.name)
-            browser.stop()
-            self.finished.emit(devices)
-        except Exception:
-            self.finished.emit([])
-
-class AirPlayScanner(QObject):
-    finished = pyqtSignal(list)
-
-    def run(self):
-        async def run_scan():
-            try:
-                loop = asyncio.get_event_loop()
-                atvs = await pyatv.scan(loop, timeout=5)
-                return sorted(atvs, key=lambda d: d.name)
-            except Exception:
-                return []
-
-        try:
-            devices = asyncio.run(run_scan())
-            self.finished.emit(devices)
-        except Exception:
-            self.finished.emit([])
-
-class CastingManager(QObject):
-    chromecasts_updated = pyqtSignal()
-    airplay_devices_updated = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.chromecasts = []
-        self.airplay_devices = []
-        self.is_scanning_chromecasts = False
-        self.is_scanning_airplay = False
-
-        self.chromecast_thread = QThread()
-        self.chromecast_scanner = ChromecastScanner()
-        self.chromecast_scanner.moveToThread(self.chromecast_thread)
-        self.chromecast_scanner.finished.connect(self.on_chromecasts_found)
-        self.chromecast_thread.started.connect(self.chromecast_scanner.run)
-
-        self.airplay_thread = QThread()
-        self.airplay_scanner = AirPlayScanner()
-        self.airplay_scanner.moveToThread(self.airplay_thread)
-        self.airplay_scanner.finished.connect(self.on_airplay_devices_found)
-        self.airplay_thread.started.connect(self.airplay_scanner.run)
-
-        self.discovery_timer = QTimer(self)
-        self.discovery_timer.setInterval(15000)  # 15 seconds
-        self.discovery_timer.timeout.connect(self.discover_devices)
-
-    def discover_devices(self):
-        self.discover_chromecasts()
-        self.discover_airplay_devices()
-
-    def discover_chromecasts(self):
-        if not CHROMECAST_AVAILABLE or self.is_scanning_chromecasts:
-            return
-        self.is_scanning_chromecasts = True
-        self.chromecast_thread.start()
-
-    def on_chromecasts_found(self, devices):
-        self.chromecasts = devices
-        self.is_scanning_chromecasts = False
-        self.chromecast_thread.quit()
-        self.chromecast_thread.wait()
-        self.chromecasts_updated.emit()
-
-    def discover_airplay_devices(self):
-        if not AIRPLAY_AVAILABLE or self.is_scanning_airplay:
-            return
-        self.is_scanning_airplay = True
-        self.airplay_thread.start()
-
-    def on_airplay_devices_found(self, devices):
-        self.airplay_devices = devices
-        self.is_scanning_airplay = False
-        self.airplay_thread.quit()
-        self.airplay_thread.wait()
-        self.airplay_devices_updated.emit()
-
-    def cast_to_chromecast(self, device_name: str, url: str):
-        if not CHROMECAST_AVAILABLE:
-            return
-
-        def run():
-            try:
-                casts, browser = pychromecast.get_listed_chromecasts(friendly_names=[device_name])
-                if casts:
-                    cast = casts[0]
-                    cast.wait()
-                    mc = cast.media_controller
-                    mc.play_media(url, "video/mp4")
-                    mc.block_until_active()
-                browser.stop()
-            except Exception:
-                pass
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def cast_to_airplay(self, device_id: str, url: str):
-        if not AIRPLAY_AVAILABLE:
-            return
-
-        async def run_cast():
-            try:
-                loop = asyncio.get_event_loop()
-                atvs = await pyatv.scan(loop, identifier=device_id)
-                if atvs:
-                    atv = await pyatv.connect(atvs[0], loop)
-                    await atv.stream.play_url(url)
-                    await atv.close()
-            except Exception:
-                pass
-
-        def start_loop():
-            try:
-                asyncio.run(run_cast())
-            except Exception:
-                pass
-
-        threading.Thread(target=start_loop, daemon=True).start()
-
-
 # ---------------- Diagnostics and Settings dialogs ----------------
 
 
@@ -986,8 +839,6 @@ class DiagnosticsDialog(QDialog):
         lines.append(f"State file: {state}  exists={state.exists()}")
         lines.append(f"Log file: {log}  exists={log.exists()}")
         lines.append(f"yt dlp available: {'yes' if YT_AVAILABLE else 'no'}")
-        lines.append(f"pychromecast available: {'yes' if CHROMECAST_AVAILABLE else 'no'}")
-        lines.append(f"pyatv available: {'yes' if AIRPLAY_AVAILABLE else 'no'}")
         text.setPlainText("\n".join(lines))
 
         lay.addWidget(text)
@@ -1110,8 +961,6 @@ class NewsBoard(QMainWindow):
         self.settings = sm.settings
         self.window_state_before_fullscreen = None
         self.pip_windows: Dict[QtTile, PipWindow] = {}
-        self.pip_placeholders: Dict[QtTile, QWidget] = {}
-        self.casting_manager = CastingManager(self)
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.setWindowIcon(QIcon("resources/icon.ico"))
@@ -1149,7 +998,6 @@ class NewsBoard(QMainWindow):
         self.list_manager.remove_all_feeds_button.clicked.connect(self.remove_all_feeds)
         self.list_manager.news_feed_list_widget.model().rowsMoved.connect(self.reorder_news_feeds)
         self.list_manager.grid_list_widget.model().rowsMoved.connect(self.reorder_video_widgets)
-        self.list_manager.grid_list_widget.currentItemChanged.connect(self.update_cast_buttons)
 
         self._build_top_toolbar()
         self._build_menus()
@@ -1175,9 +1023,6 @@ class NewsBoard(QMainWindow):
 
         # Focus and keyboard
         self.central_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-        self.casting_manager.discovery_timer.start()
-        self.casting_manager.discover_devices()
 
     def refresh_ui(self):
         self.sm.load()
@@ -1333,20 +1178,6 @@ class NewsBoard(QMainWindow):
         spacer2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer2)
 
-        self.chromecast_button = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon), tr("UI", "Chromecast"))
-        self.chromecast_button.setToolTip(tr("UI", "Cast to Chromecast"))
-        self.chromecast_button.setAccessibleName(tr("UI", "Chromecast"))
-        self.chromecast_button.setEnabled(False)
-        self.chromecast_button.clicked.connect(self.show_chromecast_menu)
-        tb.addWidget(self.chromecast_button)
-
-        self.airplay_button = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon), tr("UI", "AirPlay"))
-        self.airplay_button.setToolTip(tr("UI", "Cast to AirPlay"))
-        self.airplay_button.setAccessibleName(tr("UI", "AirPlay"))
-        self.airplay_button.setEnabled(False)
-        self.airplay_button.clicked.connect(self.show_airplay_menu)
-        tb.addWidget(self.airplay_button)
-
         self.fullscreen_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton), tr("UI", "Fullscreen")
         )
@@ -1394,10 +1225,6 @@ class NewsBoard(QMainWindow):
         msgs = []
         if platform_name() == "Linux" and not have_gstreamer():
             msgs.append(tr("Diag", "GStreamer is not found. Install base good bad and ugly sets."))
-        if not CHROMECAST_AVAILABLE:
-            msgs.append(tr("Diag", "Chromecast support is disabled. Please install pychromecast."))
-        if not AIRPLAY_AVAILABLE:
-            msgs.append(tr("Diag", "AirPlay support is disabled. Please install pyatv."))
         if msgs:
             QMessageBox.information(self, APP_NAME, "\n".join(msgs))
 
@@ -1655,14 +1482,13 @@ class NewsBoard(QMainWindow):
         QTimer.singleShot(0, lambda: setattr(self, "_is_clearing", False))
 
     def update_grid(self):
-        # Clear the grid layout completely, except for placeholders
-        for i in reversed(range(self.grid_layout.count())):
-            item = self.grid_layout.itemAt(i)
+        # Clear the grid layout completely.
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
             widget = item.widget()
-            if widget and widget not in self.pip_placeholders.values():
+            if widget:
                 widget.setParent(None)
 
-        n = len(self.video_widgets)
         active_widgets = [w for w in self.video_widgets if w not in self.pip_windows]
         n_active = len(active_widgets)
 
@@ -1686,12 +1512,6 @@ class NewsBoard(QMainWindow):
             item = QListWidgetItem(w.title)
             item.setData(Qt.ItemDataRole.UserRole, w)
             self.list_manager.grid_list_widget.addItem(item)
-
-    def update_cast_buttons(self):
-        selected = self.list_manager.grid_list_widget.selectedItems()
-        has_selection = bool(selected)
-        self.chromecast_button.setEnabled(has_selection and CHROMECAST_AVAILABLE)
-        self.airplay_button.setEnabled(has_selection and AIRPLAY_AVAILABLE)
 
     # Audio policy
     def toggle_mute_single(self, video_widget: QtTile):
@@ -1843,32 +1663,13 @@ class NewsBoard(QMainWindow):
             pip_window = self.pip_windows.pop(tile)
             pip_window.close()
         else:
-            placeholder = QWidget()
-            placeholder.setFixedSize(tile.size())
-            for i in range(self.grid_layout.count()):
-                item = self.grid_layout.itemAt(i)
-                if item and item.widget() is tile:
-                    self.grid_layout.replaceWidget(tile, placeholder)
-                    self.pip_placeholders[tile] = placeholder
-                    tile.setParent(None)
-                    pip_window = PipWindow(tile, self)
-                    self.pip_windows[tile] = pip_window
-                    break
+            pip_window = PipWindow(tile, self)
+            self.pip_windows[tile] = pip_window
+            self.update_grid()
 
     def reattach_tile(self, tile: QtTile):
         if tile in self.pip_windows:
             self.pip_windows.pop(tile)
-
-        placeholder = self.pip_placeholders.pop(tile, None)
-        if placeholder:
-            for i in range(self.grid_layout.count()):
-                item = self.grid_layout.itemAt(i)
-                if item and item.widget() is placeholder:
-                    tile.setParent(self.central_widget)
-                    self.grid_layout.replaceWidget(placeholder, tile)
-                    placeholder.deleteLater()
-                    tile.show()
-                    return
 
         tile.setParent(self.central_widget)
         tile.show()
@@ -1890,53 +1691,6 @@ class NewsBoard(QMainWindow):
     def reload_all_videos(self):
         for widget in self.video_widgets:
             widget.safe_reload()
-
-    def show_chromecast_menu(self):
-        menu = QMenu(self)
-        if self.casting_manager.is_scanning_chromecasts:
-            menu.addAction(tr("Casting", "Scanning..."))
-        elif not self.casting_manager.chromecasts:
-            menu.addAction(tr("Casting", "No devices found"))
-        else:
-            for device in self.casting_manager.chromecasts:
-                action = QAction(device.name, self)
-                action.triggered.connect(lambda _, d=device: self.cast_to_chromecast(d.name))
-                menu.addAction(action)
-        menu.addSeparator()
-        rescan_action = QAction(tr("Casting", "Rescan"), self)
-        rescan_action.triggered.connect(self.casting_manager.discover_chromecasts)
-        menu.addAction(rescan_action)
-        menu.exec(self.chromecast_button.mapToGlobal(self.chromecast_button.rect().bottomLeft()))
-
-    def show_airplay_menu(self):
-        menu = QMenu(self)
-        if self.casting_manager.is_scanning_airplay:
-            menu.addAction(tr("Casting", "Scanning..."))
-        elif not self.casting_manager.airplay_devices:
-            menu.addAction(tr("Casting", "No devices found"))
-        else:
-            for device in self.casting_manager.airplay_devices:
-                action = QAction(device.name, self)
-                action.triggered.connect(lambda _, d=device: self.cast_to_airplay(d.identifier))
-                menu.addAction(action)
-        menu.addSeparator()
-        rescan_action = QAction(tr("Casting", "Rescan"), self)
-        rescan_action.triggered.connect(self.casting_manager.discover_airplay_devices)
-        menu.addAction(rescan_action)
-
-    def cast_to_chromecast(self, device_name: str):
-        selected = self.list_manager.grid_list_widget.selectedItems()
-        if not selected:
-            return
-        tile = selected[0].data(Qt.ItemDataRole.UserRole)
-        self.casting_manager.cast_to_chromecast(device_name, tile.url)
-
-    def cast_to_airplay(self, device_id: str):
-        selected = self.list_manager.grid_list_widget.selectedItems()
-        if not selected:
-            return
-        tile = selected[0].data(Qt.ItemDataRole.UserRole)
-        self.casting_manager.cast_to_airplay(device_id, tile.url)
 
     # State
     def save_state(self):
@@ -1979,11 +1733,6 @@ class NewsBoard(QMainWindow):
             self.showMaximized()
 
     def closeEvent(self, event):
-        self.casting_manager.discovery_timer.stop()
-        self.casting_manager.chromecast_thread.quit()
-        self.casting_manager.chromecast_thread.wait()
-        self.casting_manager.airplay_thread.quit()
-        self.casting_manager.airplay_thread.wait()
         self._is_clearing = True
         try:
             self._queue_timer.stop()
@@ -2036,6 +1785,11 @@ def main():
     QCoreApplication.setOrganizationName(APP_ORG)
     QCoreApplication.setOrganizationDomain(APP_DOMAIN)
     QCoreApplication.setApplicationVersion(APP_VERSION)
+
+    def silent_handler(msg_type, msg_log_context, msg_string):
+        pass
+
+    qInstallMessageHandler(silent_handler)
 
     app = QApplication(sys.argv)
     app.setApplicationDisplayName(APP_NAME)
