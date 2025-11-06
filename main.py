@@ -101,7 +101,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "2025.11.05"
+APP_VERSION = "2025.11.06"
 
 # ---------------- i18n helpers ----------------
 
@@ -413,6 +413,7 @@ class QtTile(QFrame):
     started = pyqtSignal(object)
     requestFullscreen = pyqtSignal(object)
     requestRemove = pyqtSignal(object)
+    requestPip = pyqtSignal(object)
 
     def __init__(self, url: str, title: str, settings: AppSettings, parent=None, muted: bool = True):
         super().__init__(parent)
@@ -421,6 +422,7 @@ class QtTile(QFrame):
         self.title = title or tr("Tile", "Video")
         self.is_muted = muted
         self.is_fullscreen_tile = False
+        self.is_pip_tile = False
         self._settings = settings
 
         outer = QVBoxLayout(self)
@@ -452,6 +454,10 @@ class QtTile(QFrame):
         self.reload_button.setAccessibleName(tr("Tile", "Reload"))
         self.reload_button.setFixedSize(24, 24)
 
+        self.pip_button = QPushButton("", controls)
+        self.pip_button.setAccessibleName(tr("Tile", "Picture-in-Picture"))
+        self.pip_button.setFixedSize(24, 24)
+
         self.fullscreen_button = QPushButton("", controls)
         self.fullscreen_button.setAccessibleName(tr("Tile", "Fullscreen"))
         self.fullscreen_button.setFixedSize(24, 24)
@@ -464,6 +470,7 @@ class QtTile(QFrame):
         row.addStretch()
         row.addWidget(self.mute_button)
         row.addWidget(self.reload_button)
+        row.addWidget(self.pip_button)
         row.addWidget(self.fullscreen_button)
         row.addWidget(self.remove_button)
         outer.addWidget(controls, 0)
@@ -483,10 +490,58 @@ class QtTile(QFrame):
 
         self.mute_button.clicked.connect(lambda: self.requestToggle.emit(self))
         self.reload_button.clicked.connect(self.safe_reload)
+        self.pip_button.clicked.connect(lambda: self.requestPip.emit(self))
         self.fullscreen_button.clicked.connect(lambda: self.requestFullscreen.emit(self))
         self.remove_button.clicked.connect(lambda: self.requestRemove.emit(self))
 
         self.play_url(self.url)
+
+    def contextMenuEvent(self, event: QEvent):
+        menu = QMenu(self)
+        style = self.style()
+
+        # Mute/Unmute Action
+        mute_text = tr("Tile", "Unmute") if self.is_muted else tr("Tile", "Mute")
+        mute_icon = style.standardIcon(QStyle.StandardPixmap.SP_MediaVolume if self.is_muted else QStyle.StandardPixmap.SP_MediaVolumeMuted)
+        mute_action = QAction(mute_icon, mute_text, self)
+        mute_action.triggered.connect(lambda: self.requestToggle.emit(self))
+        menu.addAction(mute_action)
+
+        # Picture-in-Picture Action
+        pip_text = tr("Tile", "Exit Picture-in-Picture") if self.is_pip_tile else tr("Tile", "Enter Picture-in-Picture")
+        pip_icon = style.standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton if self.is_pip_tile else QStyle.StandardPixmap.SP_TitleBarMinButton)
+        pip_action = QAction(pip_icon, pip_text, self)
+        pip_action.triggered.connect(lambda: self.requestPip.emit(self))
+        menu.addAction(pip_action)
+
+        # Fullscreen Action
+        fullscreen_text = tr("Tile", "Exit Fullscreen") if self.is_fullscreen_tile else tr("Tile", "Enter Fullscreen")
+        fullscreen_icon = style.standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton if self.is_fullscreen_tile else QStyle.StandardPixmap.SP_TitleBarMaxButton)
+        fullscreen_action = QAction(fullscreen_icon, fullscreen_text, self)
+        fullscreen_action.triggered.connect(lambda: self.requestFullscreen.emit(self))
+        menu.addAction(fullscreen_action)
+
+        # Reload Action
+        reload_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload), tr("Tile", "Reload"), self)
+        reload_action.triggered.connect(self.safe_reload)
+        menu.addAction(reload_action)
+
+        # Copy URL Action
+        copy_url_action = QAction(tr("Tile", "Copy URL"), self)
+        copy_url_action.triggered.connect(self.copy_url)
+        menu.addAction(copy_url_action)
+
+        menu.addSeparator()
+
+        # Remove Action
+        remove_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("Tile", "Remove"), self)
+        remove_action.triggered.connect(lambda: self.requestRemove.emit(self))
+        menu.addAction(remove_action)
+
+        menu.exec(event.globalPos())
+
+    def copy_url(self):
+        QApplication.clipboard().setText(self.url)
 
     def on_media_status_changed(self, status: QMediaPlayer.MediaStatus):
         if status == QMediaPlayer.MediaStatus.LoadingMedia:
@@ -546,6 +601,10 @@ class QtTile(QFrame):
         self.is_fullscreen_tile = is_fullscreen
         self._refresh_icons()
 
+    def set_is_pip(self, is_pip: bool):
+        self.is_pip_tile = is_pip
+        self._refresh_icons()
+
     def _refresh_icons(self):
         style = self.style()
         self.mute_button.setIcon(
@@ -553,6 +612,13 @@ class QtTile(QFrame):
                                else QStyle.StandardPixmap.SP_MediaVolume)
         )
         self.reload_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        if self.is_pip_tile:
+            self.pip_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
+            self.pip_button.setToolTip(tr("Tile", "Exit Picture-in-Picture"))
+        else:
+            self.pip_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarMinButton))
+            self.pip_button.setToolTip(tr("Tile", "Enter Picture-in-Picture"))
+
         if self.is_fullscreen_tile:
             self.fullscreen_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
             self.fullscreen_button.setToolTip(tr("Tile", "Exit Fullscreen"))
@@ -591,6 +657,7 @@ class QtTile(QFrame):
             lambda: self.player.mediaStatusChanged.disconnect(),
             lambda: self.mute_button.clicked.disconnect(),
             lambda: self.reload_button.clicked.disconnect(),
+            lambda: self.pip_button.clicked.disconnect(),
             lambda: self.fullscreen_button.clicked.disconnect(),
             lambda: self.remove_button.clicked.disconnect(),
         ):
@@ -736,6 +803,10 @@ class ListManager(QDockWidget):
 
         self.grid_list_widget = QListWidget()
         self.grid_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.grid_list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.grid_list_widget.setDragEnabled(True)
+        self.grid_list_widget.setAcceptDrops(True)
+        self.grid_list_widget.setDropIndicatorShown(True)
         self.grid_list_widget.setAccessibleName(tr("List", "Grid Items"))
 
         self.grid_layout.addWidget(self.grid_toolbar, 0)
@@ -856,6 +927,29 @@ class SettingsDialog(QDialog):
 # ---------------- Main window ----------------
 
 
+class PipWindow(QWidget):
+    def __init__(self, tile: QtTile, main_window: QMainWindow):
+        super().__init__()
+        self.tile = tile
+        self.main_window = main_window
+        self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setWindowTitle(f"PiP - {tile.title}")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.tile)
+
+        self.tile.set_is_pip(True)
+        self.show()
+
+    def closeEvent(self, event):
+        self.tile.set_is_pip(False)
+        self.layout().removeWidget(self.tile)
+        self.tile.setParent(None)
+        self.main_window.reattach_tile(self.tile)
+        super().closeEvent(event)
+
+
 class NewsBoard(QMainWindow):
     AUDIO_RETRY_COUNT = 6
     AUDIO_RETRY_DELAY_MS = 150
@@ -865,6 +959,8 @@ class NewsBoard(QMainWindow):
         self.sm = sm
         self.settings = sm.settings
         self.window_state_before_fullscreen = None
+        self.pip_windows: Dict[QtTile, PipWindow] = {}
+        self.pip_placeholders: Dict[QtTile, QWidget] = {}
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.setWindowIcon(QIcon("resources/icon.ico"))
@@ -901,6 +997,7 @@ class NewsBoard(QMainWindow):
         self.list_manager.remove_feed_button.clicked.connect(self.remove_feed)
         self.list_manager.remove_all_feeds_button.clicked.connect(self.remove_all_feeds)
         self.list_manager.news_feed_list_widget.model().rowsMoved.connect(self.reorder_news_feeds)
+        self.list_manager.grid_list_widget.model().rowsMoved.connect(self.reorder_video_widgets)
 
         self._build_top_toolbar()
         self._build_menus()
@@ -954,7 +1051,7 @@ class NewsBoard(QMainWindow):
             dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
             dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
             app.setPalette(dark_palette)
-            app.setStyleSheet("""
+            app.setStyleSheet('''
                 QToolTip {
                     color: #ffffff;
                     background-color: #2a82da;
@@ -980,7 +1077,7 @@ class NewsBoard(QMainWindow):
                 QMenu::item:selected {
                     background-color: #2a82da;
                 }
-            """)
+            ''')
         else:
             app.setStyleSheet("")
             app.setPalette(QApplication.style().standardPalette())
@@ -1220,6 +1317,15 @@ class NewsBoard(QMainWindow):
     def remove_all_feeds(self):
         if not self.news_feeds:
             return
+        reply = QMessageBox.question(
+            self,
+            tr("List", "Confirm Clear All"),
+            tr("List", "Are you sure you want to clear all news feeds?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.No:
+            return
         self.news_feeds.clear()
         self.save_news_feeds()
         self._refresh_feeds_list()
@@ -1255,6 +1361,7 @@ class NewsBoard(QMainWindow):
         vw.requestToggle.connect(self.toggle_mute_single)
         vw.started.connect(self.on_tile_playing)
         vw.requestFullscreen.connect(self.toggle_fullscreen_tile)
+        vw.requestPip.connect(self.toggle_pip)
         vw.requestRemove.connect(self.remove_video_widget)
 
         self.video_widgets.append(vw)
@@ -1288,6 +1395,7 @@ class NewsBoard(QMainWindow):
                 lambda: widget.requestToggle.disconnect(),
                 lambda: widget.started.disconnect(),
                 lambda: widget.requestFullscreen.disconnect(),
+                lambda: widget.requestPip.disconnect(),
                 lambda: widget.requestRemove.disconnect(),
             ):
                 try:
@@ -1311,6 +1419,19 @@ class NewsBoard(QMainWindow):
             self._enforce_audio_policy_with_retries()
 
     def remove_all_videos(self):
+        if not self.video_widgets:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            tr("UI", "Confirm Remove All"),
+            tr("UI", "Are you sure you want to remove all videos from the grid?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.No:
+            return
+
         if self.isFullScreen():
             self.exit_fullscreen()
 
@@ -1329,6 +1450,7 @@ class NewsBoard(QMainWindow):
                 lambda: w.requestToggle.disconnect(),
                 lambda: w.started.disconnect(),
                 lambda: w.requestFullscreen.disconnect(),
+                lambda: w.requestPip.disconnect(),
                 lambda: w.requestRemove.disconnect(),
             ):
                 try:
@@ -1357,31 +1479,32 @@ class NewsBoard(QMainWindow):
         QTimer.singleShot(0, lambda: setattr(self, "_is_clearing", False))
 
     def update_grid(self):
-        widgets_in_layout = set()
-        for i in range(self.grid_layout.count()):
+        # Clear the grid layout completely, except for placeholders
+        for i in reversed(range(self.grid_layout.count())):
             item = self.grid_layout.itemAt(i)
-            if item and item.widget() and isinstance(item.widget(), QtTile):
-                widgets_in_layout.add(item.widget())
-
-        video_widgets_set = set(self.video_widgets)
-        widgets_to_remove = widgets_in_layout - video_widgets_set
-        for w in widgets_to_remove:
-            self.grid_layout.removeWidget(w)
+            widget = item.widget()
+            if widget and widget not in self.pip_placeholders.values():
+                widget.setParent(None)
 
         n = len(self.video_widgets)
-        if n == 0:
+        active_widgets = [w for w in self.video_widgets if w not in self.pip_windows]
+        n_active = len(active_widgets)
+
+        if n_active == 0:
             self.list_manager.grid_list_widget.clear()
             return
 
-        cols = max(1, math.isqrt(n))
-        if cols * cols < n:
+        cols = max(1, math.isqrt(n_active))
+        if cols * cols < n_active:
             cols += 1
 
-        for i, w in enumerate(self.video_widgets):
+        # Re-add non-PiP widgets to the grid
+        for i, w in enumerate(active_widgets):
             row = i // cols
             col = i % cols
             self.grid_layout.addWidget(w, row, col)
 
+        # Update the list widget
         self.list_manager.grid_list_widget.clear()
         for w in self.video_widgets:
             item = QListWidgetItem(w.title)
@@ -1533,6 +1656,55 @@ class NewsBoard(QMainWindow):
             self.showFullScreen()
             self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
 
+    def toggle_pip(self, tile: QtTile):
+        if tile in self.pip_windows:
+            pip_window = self.pip_windows.pop(tile)
+            pip_window.close()
+        else:
+            placeholder = QWidget()
+            placeholder.setFixedSize(tile.size())
+            for i in range(self.grid_layout.count()):
+                item = self.grid_layout.itemAt(i)
+                if item and item.widget() is tile:
+                    self.grid_layout.replaceWidget(tile, placeholder)
+                    self.pip_placeholders[tile] = placeholder
+                    tile.setParent(None)
+                    pip_window = PipWindow(tile, self)
+                    self.pip_windows[tile] = pip_window
+                    break
+
+    def reattach_tile(self, tile: QtTile):
+        if tile in self.pip_windows:
+            self.pip_windows.pop(tile)
+
+        placeholder = self.pip_placeholders.pop(tile, None)
+        if placeholder:
+            for i in range(self.grid_layout.count()):
+                item = self.grid_layout.itemAt(i)
+                if item and item.widget() is placeholder:
+                    tile.setParent(self.central_widget)
+                    self.grid_layout.replaceWidget(placeholder, tile)
+                    placeholder.deleteLater()
+                    tile.show()
+                    return
+
+        tile.setParent(self.central_widget)
+        tile.show()
+        self.update_grid()
+
+    def reorder_video_widgets(self, *_):
+        new_order_widgets = []
+        w = self.list_manager.grid_list_widget
+        for i in range(w.count()):
+            item = w.item(i)
+            video_widget = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(video_widget, QtTile):
+                new_order_widgets.append(video_widget)
+
+        pip_widgets = [vw for vw in self.video_widgets if vw not in new_order_widgets]
+        self.video_widgets = new_order_widgets + pip_widgets
+        self.update_grid()
+
     def reload_all_videos(self):
         for widget in self.video_widgets:
             widget.safe_reload()
@@ -1544,6 +1716,8 @@ class NewsBoard(QMainWindow):
         state = {
             "videos": [(w.url, w.title) for w in self.video_widgets],
             "active_volume": int(self.active_volume),
+            "geometry": self.saveGeometry().toBase64().data().decode("utf-8"),
+            "is_maximized": self.isMaximized(),
         }
         try:
             state_file.write_text(json.dumps(state, indent=4), encoding="utf-8")
@@ -1553,15 +1727,27 @@ class NewsBoard(QMainWindow):
     def load_state(self):
         _, state_file, _ = self.sm.feeds_file, self.sm.state_file, self.sm.log_file
         if not state_file.exists():
+            self.showMaximized()
             return
+
         try:
             state = json.loads(state_file.read_text(encoding="utf-8"))
             self.active_volume = int(state.get("active_volume", self.settings.volume_default))
+
+            geometry_b64 = state.get("geometry")
+            if geometry_b64:
+                self.restoreGeometry(QByteArray.fromBase64(geometry_b64.encode("utf-8")))
+
+            if state.get("is_maximized", True):
+                self.showMaximized()
+            else:
+                self.showNormal()
+
             # Stagger start for performance
             for url, title in state.get("videos", []):
                 self._enqueue(url, title)
         except Exception:
-            pass
+            self.showMaximized()
 
     def closeEvent(self, event):
         self._is_clearing = True
@@ -1626,7 +1812,7 @@ def main():
     sm.load()
 
     win = NewsBoard(sm)
-    win.showMaximized()
+    win.show()
     sys.exit(app.exec())
 
 
