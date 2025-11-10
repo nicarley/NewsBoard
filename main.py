@@ -29,6 +29,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import parse_qsl, urlparse
+import requests
 
 from PyQt6.QtCore import (
     QByteArray,
@@ -121,18 +122,19 @@ def user_app_dir() -> Path:
     return base
 
 
-def default_files() -> Tuple[Path, Path, Path]:
+def default_files() -> Tuple[Path, Path, Path, Path]:
     base = user_app_dir()
     settings_dir = base
     feeds = settings_dir / "news_feeds.json"
+    playlists = settings_dir / "playlists.json"
     state = settings_dir / "app_state.json"
     log = settings_dir / "newsboard.log"
-    return feeds, state, log
+    return feeds, playlists, state, log
 
 
 def migrate_legacy_settings() -> None:
     legacy = Path("resources") / "settings"
-    feeds, state, log = default_files()
+    feeds, playlists, state, log = default_files()
     try:
         if legacy.exists() and legacy.is_dir():
             moved = False
@@ -244,6 +246,43 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
     return None
 
 
+def parse_m3u(content: str) -> list[Tuple[str, str]]:
+    """Parses M3U content and extracts channel information."""
+    channels = []
+    lines = [line.strip() for line in content.splitlines()]
+
+    if not lines or not lines[0].startswith("#EXTM3U"):
+        # If it's not a valid M3U, maybe it's just a list of URLs
+        return [("Pasted Link", line) for line in lines if line and not line.startswith("#")]
+
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith("#EXTINF:"):
+            info_line = lines[i]
+            # The URL is expected to be the next line that is not a comment/tag
+            url_line = ""
+            for j in range(i + 1, len(lines)):
+                if lines[j] and not lines[j].startswith("#"):
+                    url_line = lines[j]
+                    i = j # Skip to the line after the URL
+                    break
+            
+            if url_line:
+                # Extract name from the end of the EXTINF line
+                name_match = re.search(r',(.+)$', info_line)
+                name = name_match.group(1) if name_match else "Unnamed Channel"
+                
+                # Also try to get a better name from tvg-name attribute
+                tvg_name_match = re.search(r'tvg-name="([^"]+)"', info_line)
+                if tvg_name_match:
+                    name = tvg_name_match.group(1)
+
+                channels.append((name.strip(), url_line.strip()))
+        i += 1
+        
+    return channels
+
+
 # ---------------- Settings model ----------------
 
 
@@ -275,8 +314,9 @@ class AppSettings:
 
 class SettingsManager:
     def __init__(self):
-        feeds, state, log = default_files()
+        feeds, playlists, state, log = default_files()
         self.feeds_file = feeds
+        self.playlists_file = playlists
         self.state_file = state
         self.log_file = log
         self.settings_file = user_app_dir() / "settings.json"
@@ -303,6 +343,7 @@ class SettingsManager:
         bundle = {
             "settings": asdict(self.settings),
             "feeds": self._read_json(self.feeds_file, {}),
+            "playlists": self._read_json(self.playlists_file, {}),
             "state": self._read_json(self.state_file, {}),
             "version": APP_VERSION,
         }
@@ -323,6 +364,9 @@ class SettingsManager:
                 feeds = bundle.get("feeds")
                 if feeds is not None:
                     self._write_json(self.feeds_file, feeds)
+                playlists = bundle.get("playlists")
+                if playlists is not None:
+                    self._write_json(self.playlists_file, playlists)
                 state = bundle.get("state")
                 if state is not None:
                     self._write_json(self.state_file, state)
@@ -722,6 +766,35 @@ class FeedDialog(QDialog):
         return self.name_input.text(), self.url_input.text()
 
 
+class PlaylistViewerDialog(QDialog):
+    def __init__(self, parent, channels):
+        super().__init__(parent)
+        self.setWindowTitle(tr("Playlist", "Select Channels"))
+        self.setMinimumSize(400, 500)
+        layout = QVBoxLayout(self)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        for name, url in channels:
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, url)
+            self.list_widget.addItem(item)
+        layout.addWidget(self.list_widget)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def get_selected_channels(self):
+        selected_channels = []
+        for item in self.list_widget.selectedItems():
+            name = item.text()
+            url = item.data(Qt.ItemDataRole.UserRole)
+            selected_channels.append((name, url))
+        return selected_channels
+
+
 class ListManager(QDockWidget):
     def __init__(self, parent=None):
         super().__init__(tr("List", "Manage Lists"), parent)
@@ -786,6 +859,41 @@ class ListManager(QDockWidget):
         self.news_feed_layout.addWidget(self.news_feed_list_widget, 1)
         self.tabs.addTab(self.news_feed_tab, tr("List", "News Feeds"))
 
+        # Playlists tab
+        self.playlists_tab = QWidget()
+        self.playlists_layout = QVBoxLayout(self.playlists_tab)
+        self.playlists_layout.setContentsMargins(6, 6, 6, 6)
+        self.playlists_layout.setSpacing(6)
+
+        self.playlists_toolbar = QWidget()
+        self.playlists_toolbar_layout = QHBoxLayout(self.playlists_toolbar)
+        self.playlists_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        self.playlists_toolbar_layout.setSpacing(6)
+
+        self.add_playlist_to_grid_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton), tr("List", "Add Selected"))
+        self.add_all_playlist_channels_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), tr("List", "Add All"))
+        self.view_playlist_channels_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_DesktopIcon), tr("List", "View Channels"))
+        self.add_playlist_url_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon), tr("List", "Add URL"))
+        self.remove_playlist_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("List", "Remove"))
+        self.remove_all_playlists_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop), tr("List", "Clear All"))
+
+        self.playlists_toolbar_layout.addWidget(self.add_playlist_to_grid_button)
+        self.playlists_toolbar_layout.addWidget(self.add_all_playlist_channels_button)
+        self.playlists_toolbar_layout.addWidget(self.view_playlist_channels_button)
+        self.playlists_toolbar_layout.addSpacing(8)
+        self.playlists_toolbar_layout.addWidget(self.add_playlist_url_button)
+        self.playlists_toolbar_layout.addWidget(self.remove_playlist_button)
+        self.playlists_toolbar_layout.addStretch()
+        self.playlists_toolbar_layout.addWidget(self.remove_all_playlists_button)
+
+        self.playlists_list_widget = QListWidget()
+        self.playlists_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.playlists_list_widget.setAccessibleName(tr("List", "Playlists"))
+
+        self.playlists_layout.addWidget(self.playlists_toolbar, 0)
+        self.playlists_layout.addWidget(self.playlists_list_widget, 1)
+        self.tabs.addTab(self.playlists_tab, tr("List", "Playlists"))
+
         # Grid tab
         self.grid_tab = QWidget()
         self.grid_layout = QVBoxLayout(self.grid_tab)
@@ -826,7 +934,7 @@ class DiagnosticsDialog(QDialog):
 
         text = QTextEdit()
         text.setReadOnly(True)
-        feeds, state, log = settings.feeds_file, settings.state_file, settings.log_file
+        feeds, playlists, state, log = settings.feeds_file, settings.playlists_file, settings.state_file, settings.log_file
 
         lines = []
         lines.append(f"{APP_NAME} {APP_VERSION}")
@@ -836,6 +944,7 @@ class DiagnosticsDialog(QDialog):
             lines.append(f"GStreamer present: {'yes' if have_gstreamer() else 'no'}")
         lines.append(f"App data folder: {user_app_dir()}")
         lines.append(f"Feeds file: {feeds}  exists={feeds.exists()}")
+        lines.append(f"Playlists file: {playlists}  exists={playlists.exists()}")
         lines.append(f"State file: {state}  exists={state.exists()}")
         lines.append(f"Log file: {log}  exists={log.exists()}")
         lines.append(f"yt dlp available: {'yes' if YT_AVAILABLE else 'no'}")
@@ -998,6 +1107,12 @@ class NewsBoard(QMainWindow):
         self.list_manager.remove_all_feeds_button.clicked.connect(self.remove_all_feeds)
         self.list_manager.news_feed_list_widget.model().rowsMoved.connect(self.reorder_news_feeds)
         self.list_manager.grid_list_widget.model().rowsMoved.connect(self.reorder_video_widgets)
+        self.list_manager.add_playlist_url_button.clicked.connect(self.add_playlist_url)
+        self.list_manager.add_playlist_to_grid_button.clicked.connect(self.add_playlist_to_grid)
+        self.list_manager.add_all_playlist_channels_button.clicked.connect(self.add_all_playlist_channels)
+        self.list_manager.view_playlist_channels_button.clicked.connect(self.view_playlist_channels)
+        self.list_manager.remove_playlist_button.clicked.connect(self.remove_playlist)
+        self.list_manager.remove_all_playlists_button.clicked.connect(self.remove_all_playlists)
 
         self._build_top_toolbar()
         self._build_menus()
@@ -1008,7 +1123,9 @@ class NewsBoard(QMainWindow):
         self._queue_timer.timeout.connect(self._process_queue)
 
         self.news_feeds: Dict[str, str] = {}
+        self.playlists: Dict[str, str] = {}
         self.load_news_feeds()
+        self.load_playlists()
         self.list_manager.tabs.setCurrentIndex(0)
 
         self.load_state()
@@ -1029,6 +1146,7 @@ class NewsBoard(QMainWindow):
         self.settings = self.sm.settings
         self.apply_theme()
         self.load_news_feeds()
+        self.load_playlists()
         self.remove_all_videos()
         self.load_state()
 
@@ -1087,6 +1205,12 @@ class NewsBoard(QMainWindow):
         mb = self.menuBar()
 
         file_menu = mb.addMenu(tr("Menu", "File"))
+        
+        act_add_playlist = QAction(tr("Menu", "Add Playlist URL"), self)
+        act_add_playlist.triggered.connect(self.add_playlist_url)
+        file_menu.addAction(act_add_playlist)
+        file_menu.addSeparator()
+        
         act_settings = QAction(tr("Menu", "Settings"), self)
         act_settings.triggered.connect(self.open_settings)
         file_menu.addAction(act_settings)
@@ -1230,7 +1354,7 @@ class NewsBoard(QMainWindow):
 
     # Feeds
     def load_news_feeds(self):
-        feeds_file, _, _ = self.sm.feeds_file, self.sm.state_file, self.sm.log_file
+        feeds_file, _, _, _ = default_files()
         feeds_file.parent.mkdir(parents=True, exist_ok=True)
         try:
             feeds = json.loads(feeds_file.read_text(encoding="utf-8"))
@@ -1253,7 +1377,7 @@ class NewsBoard(QMainWindow):
             w.addItem(item)
 
     def save_news_feeds(self):
-        f = self.sm.feeds_file
+        f, _, _, _ = default_files()
         f.parent.mkdir(parents=True, exist_ok=True)
         try:
             f.write_text(json.dumps(self.news_feeds, indent=4), encoding="utf-8")
@@ -1344,6 +1468,142 @@ class NewsBoard(QMainWindow):
                 new_news_feeds[name] = self.news_feeds[name]
         self.news_feeds = new_news_feeds
         self.save_news_feeds()
+
+    # Playlists
+    def load_playlists(self):
+        _, playlists_file, _, _ = default_files()
+        playlists_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.playlists = json.loads(playlists_file.read_text(encoding="utf-8"))
+        except Exception:
+            self.playlists = {}
+        self._refresh_playlists_list()
+
+    def _refresh_playlists_list(self):
+        w = self.list_manager.playlists_list_widget
+        w.clear()
+        for name, url in self.playlists.items():
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, url)
+            w.addItem(item)
+
+    def save_playlists(self):
+        _, f, _, _ = default_files()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            f.write_text(json.dumps(self.playlists, indent=4), encoding="utf-8")
+        except Exception:
+            pass
+
+    def add_playlist_url(self):
+        dialog = FeedDialog(self, name="", url="")
+        dialog.setWindowTitle(tr("Playlist", "Add Playlist URL"))
+        dialog.set_name_label(tr("Playlist", "Name"))
+        if dialog.exec():
+            name, url = dialog.get_feed_data()
+            if name and url:
+                self.playlists[name] = url
+                self.save_playlists()
+                self._refresh_playlists_list()
+
+    def add_playlist_to_grid(self):
+        selected = self.list_manager.playlists_list_widget.selectedItems()
+        if not selected:
+            return
+
+        item = selected[0]
+        playlist_url = item.data(Qt.ItemDataRole.UserRole)
+
+        try:
+            response = requests.get(playlist_url, timeout=10)
+            response.raise_for_status()
+            m3u_content = response.text
+        except requests.exceptions.RequestException as e:
+            QMessageBox.warning(self, "Error", f"Could not fetch playlist: {e}")
+            return
+
+        channels = parse_m3u(m3u_content)
+        if not channels:
+            QMessageBox.information(self, "Playlist", "No channels found in this playlist.")
+            return
+
+        dialog = PlaylistViewerDialog(self, channels)
+        if dialog.exec():
+            selected_channels = dialog.get_selected_channels()
+            for name, url in selected_channels:
+                self._enqueue(url, name)
+
+    def add_all_playlist_channels(self):
+        selected = self.list_manager.playlists_list_widget.selectedItems()
+        if not selected:
+            return
+        for item in selected:
+            playlist_url = item.data(Qt.ItemDataRole.UserRole)
+            try:
+                response = requests.get(playlist_url, timeout=10)
+                response.raise_for_status()
+                m3u_content = response.text
+            except requests.exceptions.RequestException as e:
+                QMessageBox.warning(self, "Error", f"Could not fetch playlist: {e}")
+                continue
+
+            channels = parse_m3u(m3u_content)
+            for name, url in channels:
+                self._enqueue(url, name)
+
+    def view_playlist_channels(self):
+        selected = self.list_manager.playlists_list_widget.selectedItems()
+        if not selected:
+            return
+
+        item = selected[0]
+        playlist_url = item.data(Qt.ItemDataRole.UserRole)
+
+        try:
+            response = requests.get(playlist_url, timeout=10)
+            response.raise_for_status()
+            m3u_content = response.text
+        except requests.exceptions.RequestException as e:
+            QMessageBox.warning(self, "Error", f"Could not fetch playlist: {e}")
+            return
+
+        channels = parse_m3u(m3u_content)
+        if not channels:
+            QMessageBox.information(self, "Playlist", "No channels found in this playlist.")
+            return
+
+        dialog = PlaylistViewerDialog(self, channels)
+        if dialog.exec():
+            selected_channels = dialog.get_selected_channels()
+            for name, url in selected_channels:
+                self._enqueue(url, name)
+
+
+    def remove_playlist(self):
+        selected = self.list_manager.playlists_list_widget.selectedItems()
+        if not selected:
+            return
+        for item in selected:
+            name = item.text()
+            self.playlists.pop(name, None)
+        self.save_playlists()
+        self._refresh_playlists_list()
+
+    def remove_all_playlists(self):
+        if not self.playlists:
+            return
+        reply = QMessageBox.question(
+            self,
+            tr("List", "Confirm Clear All"),
+            tr("List", "Are you sure you want to clear all playlists?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.No:
+            return
+        self.playlists.clear()
+        self.save_playlists()
+        self._refresh_playlists_list()
 
     # Queue and grid
     def _enqueue(self, url, title):
@@ -1694,7 +1954,7 @@ class NewsBoard(QMainWindow):
 
     # State
     def save_state(self):
-        _, state_file, _ = self.sm.feeds_file, self.sm.state_file, self.sm.log_file
+        _, _, state_file, _ = default_files()
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state = {
             "videos": [(w.url, w.title) for w in self.video_widgets],
@@ -1708,7 +1968,7 @@ class NewsBoard(QMainWindow):
             pass
 
     def load_state(self):
-        _, state_file, _ = self.sm.feeds_file, self.sm.state_file, self.sm.log_file
+        _, _, state_file, _ = default_files()
         if not state_file.exists():
             self.showMaximized()
             return
