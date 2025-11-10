@@ -1,42 +1,129 @@
 {
-    "ABC News": "https://www.youtube.com/@ABCNews/live",
-    "Al Jazeera": "https://www.youtube.com/@aljazeeraenglish/live",
-    "Associated Press": "https://www.youtube.com/@AssociatedPress/live",
-    "Bleacher Report": "https://www.youtube.com/@BleacherReport/live",
-    "Bloomberg Business News": "https://www.youtube.com/@markets/live",
-    "CBS News": "https://www.youtube.com/@CBSNews/live",
-    "CBS News Live": "https://www.youtube.com/live/FTpvdUCMmDE?pp=YADSBwkJwBgBhyohjO8%3D",
-    "CNBC": "https://www.youtube.com/live/9NyxcX3rhQs",
-    "CNBC Television": "https://www.youtube.com/@CNBCtelevision/live",
-    "CNN Live": "https://www.youtube.com/@CNN/streams/live",
-    "ESPN Chicago 1000": "https://www.youtube.com/@ESPN1000Chicago/live",
-    "Forbes Breaking News": "https://www.youtube.com/@ForbesBreakingNews/live",
-    "Fox Business": "https://www.youtube.com/foxbusiness/live",
-    "Fox News Now": "https://www.youtube.com/embed/4nMfRpesYfw?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
-    "Fox Sports": "https://www.youtube.com/@foxsports/live",
-    "Fox Weather": "https://www.youtube.com/@Foxweather/live",
-    "More Max Velocity": "https://www.youtube.com/@MoreMaxVelocity/live",
-    "MSNBC Live": "https://www.youtube.com/@msnbc/live",
-    "NASA ISS": "https://www.youtube.com/@NASA/live",
-    "NASA Sen ISS": "https://www.youtube.com/@Sen/live",
-    "NBC News": "https://www.youtube.com/@NBCNews/live",
-    "PBSNewsHour": "https://www.youtube.com/@PBSNewsHour/live",
-    "SkyNews": "https://www.youtube.com/@SkyNews/live",
-    "The Hill": "https://www.youtube.com/@thehill/live",
-    "TWIT.TV": "https://www.youtube.com/@twit/live",
-    "USA Today Live": "https://www.youtube.com/@USATODAY/live",
-    "ViceNews": "https://www.youtube.com/@VICENews/live",
-    "Yallbot Weather": "https://www.youtube.com/@OfficialYallBot/live",
-    "Wabash CatchTV": "https://www.youtube.com/@WabashCatchTV/live",
-    "Webcam: Allegiant Stadium": "https://www.youtube.com/watch?v=MnyjqGMkzmw",
-    "Webcam: Fort Meyers, FL": "https://www.youtube.com/watch?v=Zg1qEHQP-A4",
-    "Webcam:  Key Largo, FL": "https://www.youtube.com/@FloridaKeysTV/live",
-    "Webcam:  Islamorada, Fl.": "https://www.youtube.com/watch?v=8ShFKuTCmhQ",
-    "Webcam:  Key Largo, Fl. Marina": "https://www.youtube.com/watch?v=cDzoBVvTaEU",
-    "Webcam:  New Orleans": "https://www.youtube.com/watch?v=qHW8srS0ylo",
-    "Webcam:  Times Square": "https://www.youtube.com/embed/rnXIjl_Rzy4?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
-    "WhiteHouse.gov Live": "https://www.youtube.com/@WhiteHouse/live",
-    "WWE Valut": "https://www.youtube.com/@WWEVault/live",
-    "WWE Live": "https://www.youtube.com/@WWE/live",
-    "Yahoo!  Finance": "https://www.youtube.com/@YahooFinance/live"
+    "settings": {
+        "audio_policy": "single",
+        "volume_default": 85,
+        "yt_mode": "direct_when_possible",
+        "per_host_preferred_backend": {},
+        "privacy_embed_only_youtube": false,
+        "pause_others_in_fullscreen": true,
+        "theme": "dark"
+    },
+    "feeds": {
+        "ABC News": "https://www.youtube.com/@ABCNews/live",
+        "Al Jazeera": "https://www.youtube.com/@aljazeeraenglish/live",
+        "Associated Press": "https://www.youtube.com/@AssociatedPress/live",
+        "Barstool Gambling": "https://www.youtube.com/@barstoolgambling/live",
+        "Barstool Sports": "https://www.youtube.com/@BarstoolSportsTV/live",
+        "Bleacher Report": "https://www.youtube.com/@BleacherReport/live",
+        "Bloomberg Business News": "https://www.youtube.com/@markets/live",
+        "Bloomberg Television": "https://www.youtube.com/@markets/live",
+        "CBS News": "https://www.youtube.com/@CBSNews/live",
+        "CBS News Live": "https://www.youtube.com/live/FTpvdUCMmDE?pp=YADSBwkJwBgBhyohjO8%3D",
+        "CNBC": "https://www.youtube.com/live/9NyxcX3rhQs",
+        "CNBC Television": "https://www.youtube.com/@CNBCtelevision/live",
+        "CNBC TV18 Prime": "https://www.youtube.com/@CNBCTV18Prime/live",
+        "CNN Live": "https://www.youtube.com/@CNN/streams/live",
+        "CourtTV": "https://www.youtube.com/@CourtTV/live",
+        "C-Span": "https://www.youtube.com/@CSPAN/live",
+        "ESPN Chicago 1000": "https://www.youtube.com/@ESPN1000Chicago/live",
+        "Forbes Breaking News": "https://www.youtube.com/@ForbesBreakingNews/live",
+        "Fox Business": "https://www.youtube.com/foxbusiness/live",
+        "Fox News Now": "https://www.youtube.com/embed/4nMfRpesYfw?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+        "Fox Sports": "https://www.youtube.com/@foxsports/live",
+        "Fox Weather": "https://www.youtube.com/@Foxweather/live",
+        "More Max Velocity": "https://www.youtube.com/@MoreMaxVelocity/live",
+        "MSNBC Live": "https://www.youtube.com/@msnbc/live",
+        "NASA ISS": "https://www.youtube.com/@NASA/live",
+        "NASA Sen ISS": "https://www.youtube.com/@Sen/live",
+        "NBC News Now": "https://www.youtube.com/@NBCNews/live",
+        "NFL on NBC": "https://www.youtube.com/@NFLonNBC/live",
+        "PBS NewsHour": "https://www.youtube.com/@PBSNewsHour/live",
+        "The Pat MAfee Show": "https://www.youtube.com/@ThePatMcAfeeShow/live",
+        "Scripps News": "https://www.youtube.com/@scrippsnews/live",
+        "SkyNews": "https://www.youtube.com/@SkyNews/live",
+        "Stock Market Live": "https://www.youtube.com/@TheStockMarket/live",
+        "The Hill": "https://www.youtube.com/@thehill/live",
+        "TWIT.TV": "https://www.youtube.com/@twit/live",
+        "USA Today Live": "https://www.youtube.com/@USATODAY/live",
+        "ViceNews": "https://www.youtube.com/@VICENews/live",
+        "Yallbot Weather": "https://www.youtube.com/@OfficialYallBot/live",
+        "The Young Turks": "https://www.youtube.com/@TheYoungTurks/live",
+        "Wabash CatchTV": "https://www.youtube.com/@WabashCatchTV/live",
+        "Webcam: Allegiant Stadium": "https://www.youtube.com/watch?v=MnyjqGMkzmw",
+        "Webcam: Fort Meyers, FL": "https://www.youtube.com/watch?v=Zg1qEHQP-A4",
+        "Webcam:  Key Largo, FL": "https://www.youtube.com/@FloridaKeysTV/live",
+        "Webcam:  Lazy Days in Islamorada": "https://www.youtube.com/@LazyDaysIslamorada/live",
+        "Webcam:  Islamorada, Fl.": "https://www.youtube.com/watch?v=8ShFKuTCmhQ",
+        "Webcam:  Key Largo, Fl. Marina": "https://www.youtube.com/watch?v=cDzoBVvTaEU",
+        "Webcam:  New Orleans": "https://www.youtube.com/watch?v=qHW8srS0ylo",
+        "Webcam: Snooks Bayside in Key Largo": "https://www.youtube.com/@SnooksBaysideKeyLargo/live",
+        "Webcam:  Times Square": "https://www.youtube.com/embed/rnXIjl_Rzy4?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+        "Webcam:  Soggy Dollar Bar, Whitebay, BVI": "https://www.youtube.com/watch?v=V_I168MM-ik",
+        "Webcam:  Whitehouse, Washington DC": "https://www.youtube.com/watch?v=Fu8vYoIkaeM",
+        "WhiteHouse.gov Live": "https://www.youtube.com/@WhiteHouse/live",
+        "WLKY, Louisville CBS": "https://www.youtube.com/@WLKY/streams/live",
+        "WWE Valut": "https://www.youtube.com/@WWEVault/live",
+        "WWE Live": "https://www.youtube.com/@WWE/live",
+        "Yahoo!  Finance": "https://www.youtube.com/@YahooFinance/live",
+        "Ryan Hall, Y'all": "https://www.youtube.com/@RyanHallYall/live",
+        "CNN News 18": "https://www.youtube.com/@cnnnews18/live",
+        "Reuters": "https://www.youtube.com/@Reuters/live",
+        "QVC": "https://www.youtube.com/@QVCtv/live"
+    },
+    "state": {
+        "videos": [
+            [
+                "https://www.youtube.com/@ABCNews/live",
+                "ABC News"
+            ],
+            [
+                "https://www.youtube.com/@aljazeeraenglish/live",
+                "Al Jazeera"
+            ],
+            [
+                "https://www.youtube.com/@markets/live",
+                "Bloomberg Business News"
+            ],
+            [
+                "https://www.youtube.com/@CBSNews/live",
+                "CBS News"
+            ],
+            [
+                "https://www.youtube.com/embed/4nMfRpesYfw?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1",
+                "Fox News Now"
+            ],
+            [
+                "https://www.youtube.com/@Foxweather/live",
+                "Fox Weather"
+            ],
+            [
+                "https://www.youtube.com/@NBCNews/live",
+                "NBC News"
+            ],
+            [
+                "https://www.youtube.com/@SkyNews/live",
+                "SkyNews"
+            ],
+            [
+                "https://www.youtube.com/@OfficialYallBot/live",
+                "Yallbot Weather"
+            ],
+            [
+                "https://www.youtube.com/@YahooFinance/live",
+                "Yahoo!  Finance"
+            ],
+            [
+                "https://www.youtube.com/@CNBCTV18Prime/live",
+                "CNBC TV18 Prime"
+            ],
+            [
+                "https://www.youtube.com/@TheYoungTurks/live",
+                "The Young Turks"
+            ]
+        ],
+        "active_volume": 62,
+        "geometry": "AdnQywADAAAAABLA////+AAAGj8AAAQHAAASwQAAARQAABXwAAACcAAAAAECAAAAB4AAABLAAAAAFwAAGj8AAAQH",
+        "is_maximized": true
+    },
+    "version": "2025.11.06"
 }
