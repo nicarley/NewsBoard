@@ -469,6 +469,7 @@ class QtTile(QFrame):
         self.is_fullscreen_tile = False
         self.is_pip_tile = False
         self._settings = settings
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1757,8 +1758,18 @@ class NewsBoard(QMainWindow):
             return
 
         cols = max(1, math.isqrt(n_active))
-        if cols * cols < n_active:
-            cols += 1
+        rows = math.ceil(n_active / cols)
+
+        # Set column and row stretch to make them equally sized
+        for i in range(self.grid_layout.columnCount()):
+            self.grid_layout.setColumnStretch(i, 0) # Reset first
+        for i in range(self.grid_layout.rowCount()):
+            self.grid_layout.setRowStretch(i, 0) # Reset first
+
+        for i in range(cols):
+            self.grid_layout.setColumnStretch(i, 1)
+        for i in range(rows):
+            self.grid_layout.setRowStretch(i, 1)
 
         # Re-add non-PiP widgets to the grid
         for i, w in enumerate(active_widgets):
