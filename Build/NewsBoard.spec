@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('C:\\Users\\admin7\\OneDrive - Americana Building Products\\Projects\\NewsBoard\\resources', 'resources')]
+datas = [('/home/nicolas/Apps/NewsBoard/resources', 'resources')]
 binaries = []
 hiddenimports = []
 hiddenimports += collect_submodules('PyQt6.QtMultimedia')
@@ -14,7 +14,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['C:\\Users\\admin7\\OneDrive - Americana Building Products\\Projects\\NewsBoard\\main.py'],
+    ['/home/nicolas/Apps/NewsBoard/main.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -44,7 +44,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\admin7\\OneDrive - Americana Building Products\\Projects\\NewsBoard\\resources\\icon.ico'],
+    icon=['/home/nicolas/Apps/NewsBoard/resources/icon.ico'],
 )
 coll = COLLECT(
     exe,
