@@ -103,7 +103,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "2025.11.10"
+APP_VERSION = "25.11.12"
 
 # ---------------- i18n helpers ----------------
 
