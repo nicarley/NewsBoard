@@ -103,7 +103,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "25.11.12"
+APP_VERSION = "25.11.14"
 
 # ---------------- i18n helpers ----------------
 
@@ -1078,13 +1078,13 @@ class NewsBoard(QMainWindow):
 
         self.apply_theme()
 
-        self.central_widget = QWidget()
-        self.central_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        the_layout = QGridLayout(self.central_widget)
+        self.central_widget_container = QWidget()
+        self.central_widget_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        the_layout = QGridLayout(self.central_widget_container)
         the_layout.setContentsMargins(0, 0, 0, 0)
         the_layout.setSpacing(4)
         self.grid_layout = the_layout
-        self.setCentralWidget(self.central_widget)
+        self.setCentralWidget(self.central_widget_container)
 
         self.video_widgets: list[QtTile] = []
         self.currently_unmuted: Optional[QtTile] = None
@@ -1140,7 +1140,7 @@ class NewsBoard(QMainWindow):
         self.first_run_checklist()
 
         # Focus and keyboard
-        self.central_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.central_widget_container.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def refresh_ui(self):
         self.sm.load()
@@ -1621,7 +1621,7 @@ class NewsBoard(QMainWindow):
 
     def create_video_widget(self, url, title):
         is_first_video = not bool(self.video_widgets)
-        vw = QtTile(url, title, self.settings, parent=self.central_widget, muted=not is_first_video)
+        vw = QtTile(url, title, self.settings, parent=self.central_widget_container, muted=not is_first_video)
         vw.requestToggle.connect(self.toggle_mute_single)
         vw.started.connect(self.on_tile_playing)
         vw.requestFullscreen.connect(self.toggle_fullscreen_tile)
@@ -1748,7 +1748,9 @@ class NewsBoard(QMainWindow):
             item = self.grid_layout.takeAt(0)
             widget = item.widget()
             if widget:
-                widget.setParent(None)
+                # The widget is removed from the layout, but it's still a child
+                # of self.central_widget_container. We don't need to do anything else.
+                pass
 
         active_widgets = [w for w in self.video_widgets if w not in self.pip_windows]
         n_active = len(active_widgets)
@@ -1776,6 +1778,7 @@ class NewsBoard(QMainWindow):
             row = i // cols
             col = i % cols
             self.grid_layout.addWidget(w, row, col)
+            w.show()
 
         # Update the list widget
         self.list_manager.grid_list_widget.clear()
@@ -1837,73 +1840,81 @@ class NewsBoard(QMainWindow):
     # Fullscreen
     def toggle_fullscreen_tile(self, tile: QtTile):
         if self.isFullScreen():
-            if self.fullscreen_tile == tile:
-                self.exit_fullscreen()
-            else:
-                if self.fullscreen_tile:
-                    self.fullscreen_tile.set_is_fullscreen(False)
-                for w in self.video_widgets:
-                    w.setVisible(w is tile)
-                self.fullscreen_tile = tile
-                self.fullscreen_tile.set_is_fullscreen(True)
+            # If already fullscreen, exit. If a different tile was clicked,
+            # this will exit and the subsequent timer will enter with the new tile.
+            current_fs_tile = self.fullscreen_tile
+            self.exit_fullscreen()
+            if current_fs_tile is not tile:
+                QTimer.singleShot(50, lambda: self.toggle_fullscreen_tile(tile))
         else:
+            # Entering fullscreen
             self.window_state_before_fullscreen = {
                 "geometry": self.saveGeometry(),
                 "is_maximized": self.isMaximized(),
                 "list_manager_visible": self.list_manager.isVisible()
             }
             self.fullscreen_tile = tile
-            self.fullscreen_tile.set_is_fullscreen(True)
-            if self.main_toolbar:
-                self.main_toolbar.hide()
+            tile.set_is_fullscreen(True)
+
+            # Hide other UI
+            if self.main_toolbar: self.main_toolbar.hide()
             self.list_manager.hide()
+
+            # Pause other videos
             for w in self.video_widgets:
-                w.setVisible(w is tile)
-                if self.settings.pause_others_in_fullscreen and w is not tile:
-                    try:
-                        w.player.pause()
-                    except Exception:
-                        pass
+                if w is not tile:
+                    if self.settings.pause_others_in_fullscreen:
+                        try: w.player.pause()
+                        except Exception: pass
+            
+            # Swap central widget
+            self.takeCentralWidget()
+            self.setCentralWidget(tile)
+            
             self.showFullScreen()
 
     def exit_fullscreen(self):
-        was_tile_fullscreen = self.fullscreen_tile is not None
-        fs = self.fullscreen_tile
+        if not self.isFullScreen():
+            return
 
-        try:
-            if self.fullscreen_tile:
-                self.fullscreen_tile.set_is_fullscreen(False)
-        except Exception:
-            pass
-        self.fullscreen_tile = None
+        fs_tile = self.fullscreen_tile
+        was_tile_fullscreen = fs_tile is not None
 
         if was_tile_fullscreen:
-            if self.main_toolbar:
-                self.main_toolbar.show()
-        else:  # was grid fullscreen
-            self.manage_lists_button.show()
-            self.url_action.setVisible(True)
-            self.add_video_button.show()
-            self.volume_label.show()
-            self.volume_slider.show()
+            # We are exiting TILE fullscreen
+            tile = self.takeCentralWidget() # Take the tile out
+            self.setCentralWidget(self.central_widget_container) # Put the grid back
+            if tile:
+                # Reparent tile to grid container
+                tile.setParent(self.central_widget_container)
+            fs_tile.set_is_fullscreen(False)
+            self.fullscreen_tile = None
+        # else: we are exiting GRID fullscreen, so the central widget is already correct.
+        
+        self.showNormal()
 
-        for w in self.video_widgets:
-            w.show()
-            if self.settings.pause_others_in_fullscreen and w is not fs:
-                try:
-                    w.player.play()
-                except Exception:
-                    pass
-
-        self.showNormal()  # Exit fullscreen first
-
+        # Restore window state
         if self.window_state_before_fullscreen:
-            self.list_manager.setVisible(self.window_state_before_fullscreen["list_manager_visible"])
-            if self.window_state_before_fullscreen["is_maximized"]:
+            self.list_manager.setVisible(self.window_state_before_fullscreen.get("list_manager_visible", True))
+            if self.window_state_before_fullscreen.get("is_maximized", False):
                 self.showMaximized()
             else:
-                self.restoreGeometry(self.window_state_before_fullscreen["geometry"])
+                geom = self.window_state_before_fullscreen.get("geometry")
+                if geom: self.restoreGeometry(geom)
             self.window_state_before_fullscreen = None
+
+        # Restore UI
+        if self.main_toolbar: self.main_toolbar.show()
+        
+        # Resume other videos
+        for w in self.video_widgets:
+            w.show() # Make sure all are visible before grid update
+            if self.settings.pause_others_in_fullscreen and w is not fs_tile:
+                try: w.player.play()
+                except Exception: pass
+        
+        # Rebuild the grid
+        self.update_grid()
 
         self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton))
 
@@ -1942,7 +1953,7 @@ class NewsBoard(QMainWindow):
         if tile in self.pip_windows:
             self.pip_windows.pop(tile)
 
-        tile.setParent(self.central_widget)
+        tile.setParent(self.central_widget_container)
         tile.show()
         self.update_grid()
 
