@@ -87,7 +87,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "25.11.14"
+APP_VERSION = "25.12.01"
 
 
 # ---------------- i18n helpers ----------------
@@ -199,13 +199,13 @@ def build_embed_or_watch(url: str) -> str:
     )
     if m:
         vid = m.group(1)
-        return f"https://www.youtube.com/watch?v={vid}"
+        return f"https://www.youtube.com/embed/{vid}"
 
     if "youtube.com" in netloc and path == "/watch":
         qs = dict(parse_qsl(p.query))
         v = qs.get("v", "")
         if len(v) == 11:
-            return f"https://www.youtube.com/watch?v={v}"
+            return f"https://www.youtube.com/embed/{v}"
     return url
 
 
@@ -652,7 +652,7 @@ class QtTile(QFrame):
     def play_url(self, url: str):
         chosen = choose_backend(url, self._settings)
         src = build_embed_or_watch(url)
-        if chosen == "qt" and is_youtube_url(src) and self._settings.yt_mode != "embed_only":
+        if chosen in ("qt", "embed") and is_youtube_url(src):
             if YT_AVAILABLE:
                 self.label.setText(f"{self.title}  {tr('Tile', 'Resolving')}")
                 self._set_status_overlay(tr("Tile", "Resolving"))
