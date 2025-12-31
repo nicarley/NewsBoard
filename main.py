@@ -1,24 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
-import os
 import re
 import shutil
 import sys
 import threading
 from collections import deque
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import parse_qsl, urlparse
-import requests
 
+import requests
 from PyQt6.QtCore import (
     QByteArray,
     QCoreApplication,
     QEvent,
-    QLocale,
     QTimer,
     QUrl,
     Qt,
@@ -30,7 +29,6 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction,
-    QGuiApplication,
     QIcon,
     QKeySequence,
     QPalette,
@@ -48,7 +46,6 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -76,7 +73,6 @@ from PyQt6.QtMultimedia import (
 )
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
-# Optional dependency
 try:
     from yt_dlp import YoutubeDL
 
@@ -84,20 +80,15 @@ try:
 except Exception:
     YT_AVAILABLE = False
 
+
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "25.12.01"
-
-
-# ---------------- i18n helpers ----------------
+APP_VERSION = "25.12.31"
 
 
 def tr(ctx: str, text: str) -> str:
     return QCoreApplication.translate(ctx, text)
-
-
-# ---------------- Cross platform storage and logging ----------------
 
 
 def user_app_dir() -> Path:
@@ -109,44 +100,48 @@ def user_app_dir() -> Path:
 
 def default_files() -> Tuple[Path, Path, Path, Path]:
     base = user_app_dir()
-    settings_dir = base
-    feeds = settings_dir / "news_feeds.json"
-    playlists = settings_dir / "playlists.json"
-    state = settings_dir / "app_state.json"
-    log = settings_dir / "newsboard.log"
+    feeds = base / "news_feeds.json"
+    playlists = base / "playlists.json"
+    state = base / "app_state.json"
+    log = base / "newsboard.log"
     return feeds, playlists, state, log
 
 
 def migrate_legacy_settings() -> None:
     legacy = Path("resources") / "settings"
-    feeds, playlists, state, log = default_files()
+    feeds, playlists, state, _log = default_files()
     try:
         if legacy.exists() and legacy.is_dir():
-            moved = False
             src_feeds = legacy / "news_feeds.json"
             src_state = legacy / "app_state.json"
             if src_feeds.exists() and not feeds.exists():
                 feeds.write_bytes(src_feeds.read_bytes())
-                moved = True
             if src_state.exists() and not state.exists():
                 state.write_bytes(src_state.read_bytes())
-                moved = True
-            if moved:
-                pass
     except Exception:
         pass
 
 
-def log_message(msg: str) -> None:
+def setup_logging(log_path: Path) -> logging.Logger:
+    logger = logging.getLogger(APP_NAME)
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+    return logger
+
+
+def safe_disconnect(signal, slot=None) -> None:
     try:
-        _, _, _, log_path = default_files()
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
+        if slot is None:
+            signal.disconnect()
+        else:
+            signal.disconnect(slot)
     except Exception:
         pass
 
-
-# ---------------- URL helpers ----------------
 
 YOUTUBE_HOSTS = (
     "youtube.com",
@@ -184,6 +179,7 @@ def build_embed_or_watch(url: str) -> str:
         p = urlparse(url)
     except Exception:
         return url
+
     netloc = p.netloc.lower()
     path = p.path.rstrip("/")
 
@@ -206,6 +202,7 @@ def build_embed_or_watch(url: str) -> str:
         v = qs.get("v", "")
         if len(v) == 11:
             return f"https://www.youtube.com/embed/{v}"
+
     return url
 
 
@@ -240,8 +237,7 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
 
 
 def parse_m3u(content: str) -> list[Tuple[str, str]]:
-    """Parses M3U content and extracts channel information."""
-    channels = []
+    channels: list[Tuple[str, str]] = []
     lines = [line.strip() for line in content.splitlines()]
 
     if not lines or not lines[0].startswith("#EXTM3U"):
@@ -259,7 +255,7 @@ def parse_m3u(content: str) -> list[Tuple[str, str]]:
                     break
 
             if url_line:
-                name_match = re.search(r',(.+)$', info_line)
+                name_match = re.search(r",(.+)$", info_line)
                 name = name_match.group(1) if name_match else "Unnamed Channel"
                 tvg_name_match = re.search(r'tvg-name="([^"]+)"', info_line)
                 if tvg_name_match:
@@ -270,19 +266,16 @@ def parse_m3u(content: str) -> list[Tuple[str, str]]:
     return channels
 
 
-# ---------------- Settings model ----------------
-
-
 @dataclass
 class AppSettings:
-    audio_policy: str = "single"  # single or mixed
+    audio_policy: str = "single"
     volume_default: int = 85
-    yt_mode: str = "direct_when_possible"  # embed_only or direct_when_possible
-    per_host_preferred_backend: Dict[str, str] = None  # host to "qt"
+    yt_mode: str = "direct_when_possible"
+    per_host_preferred_backend: Dict[str, str] = field(default_factory=dict)
     privacy_embed_only_youtube: bool = False
     pause_others_in_fullscreen: bool = True
     theme: str = "system"
-    layout_mode: str = "auto"  # auto, 2x2, 3x3, 1xN, Nx1
+    layout_mode: str = "auto"
     first_run_done: bool = False
 
     def to_json(self) -> str:
@@ -304,7 +297,7 @@ class AppSettings:
 
 
 class SettingsManager:
-    def __init__(self):
+    def __init__(self, logger: logging.Logger):
         feeds, playlists, state, log = default_files()
         self.feeds_file = feeds
         self.playlists_file = playlists
@@ -312,6 +305,7 @@ class SettingsManager:
         self.log_file = log
         self.settings_file = user_app_dir() / "settings.json"
         self.settings = AppSettings()
+        self.logger = logger
 
     def load(self):
         try:
@@ -319,13 +313,13 @@ class SettingsManager:
                 d = json.loads(self.settings_file.read_text(encoding="utf-8"))
                 self.settings = AppSettings.from_dict(d)
         except Exception:
-            pass
+            self.logger.exception("Failed to load settings")
 
     def save(self):
         try:
             self.settings_file.write_text(self.settings.to_json(), encoding="utf-8")
         except Exception:
-            pass
+            self.logger.exception("Failed to save settings")
 
     def export_profile(self, parent: QWidget):
         path, _ = QFileDialog.getSaveFileName(parent, tr("Settings", "Export profile"), "", "JSON (*.json)")
@@ -338,7 +332,10 @@ class SettingsManager:
             "state": self._read_json(self.state_file, {}),
             "version": APP_VERSION,
         }
-        Path(path).write_text(json.dumps(bundle, indent=4), encoding="utf-8")
+        try:
+            Path(path).write_text(json.dumps(bundle, indent=4), encoding="utf-8")
+        except Exception:
+            self.logger.exception("Failed to export profile")
 
     def import_profile(self, parent: QWidget) -> bool:
         dialog = QFileDialog(parent, tr("Settings", "Import profile"), "", "JSON (*.json)")
@@ -363,6 +360,7 @@ class SettingsManager:
                     self._write_json(self.state_file, state)
                 return True
             except Exception:
+                self.logger.exception("Failed to import profile")
                 QMessageBox.warning(parent, APP_NAME, tr("Settings", "Could not import profile"))
                 return False
         return False
@@ -380,9 +378,6 @@ class SettingsManager:
             path.write_text(json.dumps(data, indent=4), encoding="utf-8")
         except Exception:
             pass
-
-
-# ---------------- Capability probe and backend choice ----------------
 
 
 def platform_name() -> str:
@@ -409,16 +404,11 @@ def qt_can_play_hls() -> bool:
 
 def choose_backend(url: str, settings: AppSettings) -> str:
     host = urlparse(url).netloc.lower()
-    if host in (settings.per_host_preferred_backend or {}):
+    if host in settings.per_host_preferred_backend:
         return settings.per_host_preferred_backend[host]
     if is_youtube_url(url):
-        if settings.privacy_embed_only_youtube:
-            return "embed"
-        return "qt"
+        return "embed" if settings.privacy_embed_only_youtube else "qt"
     return "qt"
-
-
-# ---------------- Async YouTube resolver ----------------
 
 
 class YtResolveWorker(QObject):
@@ -441,9 +431,6 @@ class YtResolveWorker(QObject):
         t.start()
 
 
-# ---------------- Tile widget ----------------
-
-
 class QtTile(QFrame):
     requestToggle = pyqtSignal(object)
     started = pyqtSignal(object)
@@ -454,6 +441,7 @@ class QtTile(QFrame):
     def __init__(self, url: str, title: str, settings: AppSettings, parent=None, muted: bool = True):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setObjectName("tile")
         self.url = url
         self.title = title or tr("Tile", "Video")
         self.is_muted = muted
@@ -529,15 +517,15 @@ class QtTile(QFrame):
         self.audio = QAudioOutput(self)
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.video_widget.videoSink())
+        self.player.setVideoOutput(self.video_widget)
 
         self.audio.setMuted(self.is_muted)
         self.audio.setVolume(0.0 if self.is_muted else float(self._settings.volume_default) / 100.0)
 
         self.player.playbackStateChanged.connect(self.on_playback_state_changed)
-        self.player.playbackStateChanged.connect(lambda *_: self.started.emit(self))
         self.player.mediaStatusChanged.connect(self.on_media_status_changed)
 
+        self._apply_tile_styles()
         self._refresh_icons()
 
         self.play_button.clicked.connect(self.toggle_play)
@@ -548,6 +536,15 @@ class QtTile(QFrame):
         self.remove_button.clicked.connect(lambda: self.requestRemove.emit(self))
 
         self.play_url(self.url)
+
+    def _apply_tile_styles(self):
+        self.setStyleSheet(
+            """
+            QFrame#tile { border-radius: 10px; background: rgba(20, 20, 20, 255); }
+            QWidget#controls { background: rgba(0, 0, 0, 140); }
+            QLabel { padding-left: 6px; }
+            """
+        )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -652,15 +649,14 @@ class QtTile(QFrame):
     def play_url(self, url: str):
         chosen = choose_backend(url, self._settings)
         src = build_embed_or_watch(url)
+
         if chosen in ("qt", "embed") and is_youtube_url(src):
             if YT_AVAILABLE:
                 self.label.setText(f"{self.title}  {tr('Tile', 'Resolving')}")
                 self._set_status_overlay(tr("Tile", "Resolving"))
                 self._yt_worker = YtResolveWorker(src, self)
                 self._yt_worker.resolved.connect(lambda direct: self._apply_source(QUrl(direct)))
-                self._yt_worker.failed.connect(
-                    lambda _msg: self.label.setText(f"{self.title}  {tr('Tile', 'Resolve failed')}")
-                )
+                self._yt_worker.failed.connect(lambda _msg: self.label.setText(f"{self.title}  {tr('Tile', 'Resolve failed')}"))
                 self._yt_worker.failed.connect(lambda _msg: self._set_status_overlay(tr("Tile", "Resolve failed")))
                 self._yt_worker.start()
                 return
@@ -668,6 +664,7 @@ class QtTile(QFrame):
                 self.label.setText(f"{self.title}  {tr('Tile', 'yt dlp not installed')}")
                 self._set_status_overlay(tr("Tile", "yt dlp not installed"))
                 return
+
         self._apply_source(QUrl(src))
 
     def _apply_source(self, qurl: QUrl):
@@ -714,12 +711,11 @@ class QtTile(QFrame):
         )
         self.play_button.setIcon(
             style.standardIcon(
-                QStyle.StandardPixmap.SP_MediaPlay
-                if not self.is_playing
-                else QStyle.StandardPixmap.SP_MediaPause
+                QStyle.StandardPixmap.SP_MediaPlay if not self.is_playing else QStyle.StandardPixmap.SP_MediaPause
             )
         )
         self.reload_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+
         if self.is_pip_tile:
             self.pip_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
             self.pip_button.setToolTip(tr("Tile", "Exit Picture-in-Picture"))
@@ -733,6 +729,7 @@ class QtTile(QFrame):
         else:
             self.fullscreen_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton))
             self.fullscreen_button.setToolTip(tr("Tile", "Enter Fullscreen"))
+
         self.remove_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
 
     def safe_reload(self):
@@ -740,42 +737,36 @@ class QtTile(QFrame):
             self.player.stop()
         except Exception:
             pass
-        try:
-            self.player.mediaStatusChanged.disconnect(self.on_media_status_changed)
-        except Exception:
-            pass
-        try:
-            self.player.playbackStateChanged.disconnect(self.on_playback_state_changed)
-        except Exception:
-            pass
+
+        safe_disconnect(self.player.mediaStatusChanged, self.on_media_status_changed)
+        safe_disconnect(self.player.playbackStateChanged, self.on_playback_state_changed)
+
         try:
             self.player.deleteLater()
         except Exception:
             pass
+
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.video_widget.videoSink())
+        self.player.setVideoOutput(self.video_widget)
         self.player.mediaStatusChanged.connect(self.on_media_status_changed)
         self.player.playbackStateChanged.connect(self.on_playback_state_changed)
+
         if self.is_muted:
             self.audio.setMuted(True)
             self.audio.setVolume(0.0)
+
         self.play_url(self.url)
 
     def stop(self):
-        for fn in (
-            lambda: self.player.playbackStateChanged.disconnect(),
-            lambda: self.player.mediaStatusChanged.disconnect(),
-            lambda: self.mute_button.clicked.disconnect(),
-            lambda: self.reload_button.clicked.disconnect(),
-            lambda: self.pip_button.clicked.disconnect(),
-            lambda: self.fullscreen_button.clicked.disconnect(),
-            lambda: self.remove_button.clicked.disconnect(),
-        ):
-            try:
-                fn()
-            except Exception:
-                pass
+        safe_disconnect(self.player.playbackStateChanged)
+        safe_disconnect(self.player.mediaStatusChanged)
+        safe_disconnect(self.mute_button.clicked)
+        safe_disconnect(self.reload_button.clicked)
+        safe_disconnect(self.pip_button.clicked)
+        safe_disconnect(self.fullscreen_button.clicked)
+        safe_disconnect(self.remove_button.clicked)
+
         try:
             self.player.stop()
         except Exception:
@@ -812,9 +803,6 @@ class QtTile(QFrame):
     def closeEvent(self, e):
         self.stop()
         super().closeEvent(e)
-
-
-# ---------------- Feed dialog and list dock ----------------
 
 
 class FeedDialog(QDialog):
@@ -880,7 +868,6 @@ class ListManager(QDockWidget):
 
         style = self.style()
 
-        # Feeds tab
         self.news_feed_tab = QWidget()
         self.news_feed_layout = QVBoxLayout(self.news_feed_tab)
         self.news_feed_layout.setContentsMargins(6, 6, 6, 6)
@@ -899,21 +886,11 @@ class ListManager(QDockWidget):
         self.add_feed_to_grid_button = QPushButton(
             style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton), tr("List", "Add Selected")
         )
-        self.add_all_feeds_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), tr("List", "Add All")
-        )
-        self.add_new_feed_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_FileIcon), tr("List", "New")
-        )
-        self.edit_feed_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_DesktopIcon), tr("List", "Edit")
-        )
-        self.remove_feed_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("List", "Remove")
-        )
-        self.remove_all_feeds_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop), tr("List", "Clear All")
-        )
+        self.add_all_feeds_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), tr("List", "Add All"))
+        self.add_new_feed_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon), tr("List", "New"))
+        self.edit_feed_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_DesktopIcon), tr("List", "Edit"))
+        self.remove_feed_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("List", "Remove"))
+        self.remove_all_feeds_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop), tr("List", "Clear All"))
 
         for b in (
             self.add_feed_to_grid_button,
@@ -950,7 +927,6 @@ class ListManager(QDockWidget):
         self.news_feed_layout.addWidget(self.news_feed_list_widget, 1)
         self.tabs.addTab(self.news_feed_tab, tr("List", "News Feeds"))
 
-        # Playlists tab
         self.playlists_tab = QWidget()
         self.playlists_layout = QVBoxLayout(self.playlists_tab)
         self.playlists_layout.setContentsMargins(6, 6, 6, 6)
@@ -975,15 +951,9 @@ class ListManager(QDockWidget):
         self.view_playlist_channels_button = QPushButton(
             style.standardIcon(QStyle.StandardPixmap.SP_DesktopIcon), tr("List", "View Channels")
         )
-        self.add_playlist_url_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_FileIcon), tr("List", "Add URL")
-        )
-        self.remove_playlist_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("List", "Remove")
-        )
-        self.remove_all_playlists_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop), tr("List", "Clear All")
-        )
+        self.add_playlist_url_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon), tr("List", "Add URL"))
+        self.remove_playlist_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("List", "Remove"))
+        self.remove_all_playlists_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop), tr("List", "Clear All"))
 
         self.playlists_toolbar_layout.addWidget(self.add_playlist_to_grid_button)
         self.playlists_toolbar_layout.addWidget(self.add_all_playlist_channels_button)
@@ -1002,7 +972,6 @@ class ListManager(QDockWidget):
         self.playlists_layout.addWidget(self.playlists_list_widget, 1)
         self.tabs.addTab(self.playlists_tab, tr("List", "Playlists"))
 
-        # Grid tab
         self.grid_tab = QWidget()
         self.grid_layout = QVBoxLayout(self.grid_tab)
         self.grid_layout.setContentsMargins(6, 6, 6, 6)
@@ -1013,9 +982,7 @@ class ListManager(QDockWidget):
         self.grid_toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.grid_toolbar_layout.setSpacing(6)
 
-        self.remove_from_grid_button = QPushButton(
-            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("List", "Remove")
-        )
+        self.remove_from_grid_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("List", "Remove"))
         self.remove_from_grid_button.setAccessibleName(tr("List", "Remove from grid"))
         self.grid_toolbar_layout.addWidget(self.remove_from_grid_button)
         self.grid_toolbar_layout.addStretch()
@@ -1045,9 +1012,6 @@ class ListManager(QDockWidget):
             item = self.playlists_list_widget.item(i)
             name = item.text().lower()
             item.setHidden(bool(text and text not in name))
-
-
-# ---------------- Diagnostics and Settings dialogs ----------------
 
 
 class DiagnosticsDialog(QDialog):
@@ -1133,7 +1097,6 @@ class SettingsDialog(QDialog):
         self.yt_mode.addItems(["direct_when_possible", "embed_only"])
 
         self.privacy_embed_only_youtube = QCheckBox(tr("Settings", "Use embeds for YouTube"))
-
         self.pause_others_in_fullscreen = QCheckBox(tr("Settings", "Pause non fullscreen tiles"))
 
         self.theme = QComboBox()
@@ -1198,16 +1161,13 @@ class SettingsDialog(QDialog):
         self._sm.save()
 
 
-# ---------------- Main window ----------------
-
-
 class PipWindow(QWidget):
     def __init__(self, tile: QtTile, main_window: QMainWindow):
         super().__init__()
         self.tile = tile
         self.main_window = main_window
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
-        self.setWindowTitle(f"PiP - {tile.title}")
+        self.setWindowTitle(f"PiP  {tile.title}")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1231,6 +1191,7 @@ class NewsBoard(QMainWindow):
     def __init__(self, sm: SettingsManager):
         super().__init__()
         self.sm = sm
+        self.logger = sm.logger
         self.settings = sm.settings
         self.window_state_before_fullscreen = None
         self.pip_windows: Dict[QtTile, PipWindow] = {}
@@ -1342,38 +1303,9 @@ class NewsBoard(QMainWindow):
             dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
             dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
             app.setPalette(dark_palette)
-            app.setStyleSheet(
-                """
-                QToolTip {
-                    color: #ffffff;
-                    background-color: #2a82da;
-                    border: 1px solid white;
-                }
-                QMenuBar {
-                    background-color: #353535;
-                }
-                QMenuBar::item {
-                    background-color: #353535;
-                    color: #ffffff;
-                }
-                QMenuBar::item:selected {
-                    background-color: #2a82da;
-                }
-                QMenu {
-                    background-color: #353535;
-                    border: 1px solid #555555;
-                }
-                QMenu::item {
-                    color: #ffffff;
-                }
-                QMenu::item:selected {
-                    background-color: #2a82da;
-                }
-            """
-            )
         else:
-            app.setStyleSheet("")
             app.setPalette(QApplication.style().standardPalette())
+        app.setStyleSheet("")
 
     def _build_menus(self):
         mb = self.menuBar()
@@ -1445,7 +1377,6 @@ class NewsBoard(QMainWindow):
         self.manage_lists_button.setToolTip(tr("UI", "Show or hide list manager"))
         self.manage_lists_button.toggled.connect(self.list_manager.setVisible)
         self.list_manager.visibilityChanged.connect(self.manage_lists_button.setChecked)
-        self.manage_lists_button.setAccessibleName(tr("UI", "Manage Lists"))
         tb.addWidget(self.manage_lists_button)
 
         spacer_small = QWidget()
@@ -1455,7 +1386,6 @@ class NewsBoard(QMainWindow):
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(tr("UI", "Enter URL or iframe"))
         self.url_input.setToolTip(tr("UI", "Paste a stream URL or iframe"))
-        self.url_input.setAccessibleName(tr("UI", "URL input"))
         self.url_action = QWidgetAction(self)
         self.url_action.setDefaultWidget(self.url_input)
         tb.addAction(self.url_action)
@@ -1465,7 +1395,6 @@ class NewsBoard(QMainWindow):
             tr("UI", "Add Video"),
         )
         self.add_video_button.clicked.connect(self.add_video_from_input)
-        self.add_video_button.setAccessibleName(tr("UI", "Add Video"))
         tb.addWidget(self.add_video_button)
 
         spacer = QWidget()
@@ -1480,7 +1409,6 @@ class NewsBoard(QMainWindow):
         self.volume_slider.setFixedWidth(180)
         self.volume_slider.setToolTip(tr("UI", "Controls active tile volume"))
         self.volume_slider.valueChanged.connect(self.on_volume_changed)
-        self.volume_slider.setAccessibleName(tr("UI", "Volume slider"))
 
         tb.addWidget(self.volume_label)
         tb.addWidget(self.volume_slider)
@@ -1490,7 +1418,6 @@ class NewsBoard(QMainWindow):
             tr("UI", "Mute All"),
         )
         self.mute_all_button.clicked.connect(self.mute_all_tiles)
-        self.mute_all_button.setAccessibleName(tr("UI", "Mute all tiles"))
         tb.addWidget(self.mute_all_button)
 
         self.next_audio_button = QPushButton(
@@ -1498,13 +1425,11 @@ class NewsBoard(QMainWindow):
             tr("UI", "Next Audio"),
         )
         self.next_audio_button.clicked.connect(self.cycle_active_audio)
-        self.next_audio_button.setAccessibleName(tr("UI", "Cycle active audio"))
         tb.addWidget(self.next_audio_button)
 
         self.layout_combo = QComboBox()
         self.layout_combo.addItems(["auto", "2x2", "3x3", "1xN", "Nx1"])
         self.layout_combo.setToolTip(tr("UI", "Grid layout"))
-        self.layout_combo.setAccessibleName(tr("UI", "Grid layout"))
         self.layout_combo.setCurrentText(self.settings.layout_mode)
         self.layout_combo.currentTextChanged.connect(self.on_layout_mode_changed)
         tb.addWidget(self.layout_combo)
@@ -1514,24 +1439,24 @@ class NewsBoard(QMainWindow):
         tb.addWidget(spacer2)
 
         self.fullscreen_button = QPushButton(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton), tr("UI", "Fullscreen")
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton),
+            tr("UI", "Fullscreen"),
         )
         self.fullscreen_button.clicked.connect(self.toggle_grid_fullscreen)
-        self.fullscreen_button.setAccessibleName(tr("UI", "Toggle Fullscreen"))
         tb.addWidget(self.fullscreen_button)
 
         self.reload_all_button = QPushButton(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload), tr("UI", "Reload All")
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
+            tr("UI", "Reload All"),
         )
         self.reload_all_button.clicked.connect(self.reload_all_videos)
-        self.reload_all_button.setAccessibleName(tr("UI", "Reload all videos"))
         tb.addWidget(self.reload_all_button)
 
         self.remove_all_button = QPushButton(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), tr("UI", "Remove All")
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon),
+            tr("UI", "Remove All"),
         )
         self.remove_all_button.clicked.connect(self.remove_all_videos)
-        self.remove_all_button.setAccessibleName(tr("UI", "Remove all videos"))
         tb.addWidget(self.remove_all_button)
 
         self.shortcut_add_all_feeds = QAction(self)
@@ -1566,7 +1491,29 @@ class NewsBoard(QMainWindow):
         if msgs:
             QMessageBox.information(self, APP_NAME, "\n".join(msgs))
 
-    # Feeds
+    def _fetch_text(self, url: str, timeout: int = 10) -> Optional[str]:
+        try:
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+            return r.text
+        except requests.exceptions.RequestException:
+            return None
+
+    def _enqueue_playlist_channels(self, m3u_text: str, choose: bool):
+        channels = parse_m3u(m3u_text)
+        if not channels:
+            QMessageBox.information(self, "Playlist", "No channels found in this playlist.")
+            return
+
+        if choose:
+            dlg = PlaylistViewerDialog(self, channels)
+            if not dlg.exec():
+                return
+            channels = dlg.get_selected_channels()
+
+        for name, url in channels:
+            self._enqueue(url, name)
+
     def load_news_feeds(self):
         feeds_file, _, _, _ = default_files()
         feeds_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1578,7 +1525,10 @@ class NewsBoard(QMainWindow):
                 "Reuters": "https://www.youtube.com/channel/UChqUTb7kYRx8-EiaN3XFrSQ",
                 "CNN": "https://www.youtube.com/@CNN",
             }
-            feeds_file.write_text(json.dumps(feeds, indent=4), encoding="utf-8")
+            try:
+                feeds_file.write_text(json.dumps(feeds, indent=4), encoding="utf-8")
+            except Exception:
+                pass
         self.news_feeds = feeds
         self._refresh_feeds_list()
 
@@ -1687,7 +1637,6 @@ class NewsBoard(QMainWindow):
         self.news_feeds = new_news_feeds
         self.save_news_feeds()
 
-    # Playlists
     def load_playlists(self):
         _, playlists_file, _, _ = default_files()
         playlists_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1740,10 +1689,12 @@ class NewsBoard(QMainWindow):
         except Exception:
             QMessageBox.warning(self, APP_NAME, tr("Playlist", "Could not read playlist file"))
             return
+
         channels = parse_m3u(content)
         if not channels:
             QMessageBox.information(self, APP_NAME, tr("Playlist", "No channels found in this playlist"))
             return
+
         dialog = PlaylistViewerDialog(self, channels)
         if dialog.exec():
             selected_channels = dialog.get_selected_channels()
@@ -1775,28 +1726,12 @@ class NewsBoard(QMainWindow):
         selected = self.list_manager.playlists_list_widget.selectedItems()
         if not selected:
             return
-
-        item = selected[0]
-        playlist_url = item.data(Qt.ItemDataRole.UserRole)
-
-        try:
-            response = requests.get(playlist_url, timeout=10)
-            response.raise_for_status()
-            m3u_content = response.text
-        except requests.exceptions.RequestException as e:
-            QMessageBox.warning(self, "Error", f"Could not fetch playlist: {e}")
+        playlist_url = selected[0].data(Qt.ItemDataRole.UserRole)
+        text = self._fetch_text(playlist_url)
+        if text is None:
+            QMessageBox.warning(self, "Error", "Could not fetch playlist.")
             return
-
-        channels = parse_m3u(m3u_content)
-        if not channels:
-            QMessageBox.information(self, "Playlist", "No channels found in this playlist.")
-            return
-
-        dialog = PlaylistViewerDialog(self, channels)
-        if dialog.exec():
-            selected_channels = dialog.get_selected_channels()
-            for name, url in selected_channels:
-                self._enqueue(url, name)
+        self._enqueue_playlist_channels(text, choose=True)
 
     def add_all_playlist_channels(self):
         selected = self.list_manager.playlists_list_widget.selectedItems()
@@ -1804,44 +1739,22 @@ class NewsBoard(QMainWindow):
             return
         for item in selected:
             playlist_url = item.data(Qt.ItemDataRole.UserRole)
-            try:
-                response = requests.get(playlist_url, timeout=10)
-                response.raise_for_status()
-                m3u_content = response.text
-            except requests.exceptions.RequestException as e:
-                QMessageBox.warning(self, "Error", f"Could not fetch playlist: {e}")
+            text = self._fetch_text(playlist_url)
+            if text is None:
+                QMessageBox.warning(self, "Error", "Could not fetch playlist.")
                 continue
-
-            channels = parse_m3u(m3u_content)
-            for name, url in channels:
-                self._enqueue(url, name)
+            self._enqueue_playlist_channels(text, choose=False)
 
     def view_playlist_channels(self):
         selected = self.list_manager.playlists_list_widget.selectedItems()
         if not selected:
             return
-
-        item = selected[0]
-        playlist_url = item.data(Qt.ItemDataRole.UserRole)
-
-        try:
-            response = requests.get(playlist_url, timeout=10)
-            response.raise_for_status()
-            m3u_content = response.text
-        except requests.exceptions.RequestException as e:
-            QMessageBox.warning(self, "Error", f"Could not fetch playlist: {e}")
+        playlist_url = selected[0].data(Qt.ItemDataRole.UserRole)
+        text = self._fetch_text(playlist_url)
+        if text is None:
+            QMessageBox.warning(self, "Error", "Could not fetch playlist.")
             return
-
-        channels = parse_m3u(m3u_content)
-        if not channels:
-            QMessageBox.information(self, "Playlist", "No channels found in this playlist.")
-            return
-
-        dialog = PlaylistViewerDialog(self, channels)
-        if dialog.exec():
-            selected_channels = dialog.get_selected_channels()
-            for name, url in selected_channels:
-                self._enqueue(url, name)
+        self._enqueue_playlist_channels(text, choose=True)
 
     def remove_playlist(self):
         selected = self.list_manager.playlists_list_widget.selectedItems()
@@ -1869,7 +1782,6 @@ class NewsBoard(QMainWindow):
         self.save_playlists()
         self._refresh_playlists_list()
 
-    # Queue and grid
     def _enqueue(self, url, title):
         self._queue.append((url, title))
         if not self._queue_timer.isActive():
@@ -1918,17 +1830,13 @@ class NewsBoard(QMainWindow):
             was_unmuted = widget == self.currently_unmuted
             if was_unmuted:
                 self.currently_unmuted = None
-            for fn in (
-                lambda: widget.requestToggle.disconnect(),
-                lambda: widget.started.disconnect(),
-                lambda: widget.requestFullscreen.disconnect(),
-                lambda: widget.requestPip.disconnect(),
-                lambda: widget.requestRemove.disconnect(),
-            ):
-                try:
-                    fn()
-                except Exception:
-                    pass
+
+            safe_disconnect(widget.requestToggle)
+            safe_disconnect(widget.started)
+            safe_disconnect(widget.requestFullscreen)
+            safe_disconnect(widget.requestPip)
+            safe_disconnect(widget.requestRemove)
+
             try:
                 widget.stop()
             except Exception:
@@ -1973,17 +1881,11 @@ class NewsBoard(QMainWindow):
         self.currently_unmuted = None
 
         for w in self.video_widgets[:]:
-            for fn in (
-                lambda: w.requestToggle.disconnect(),
-                lambda: w.started.disconnect(),
-                lambda: w.requestFullscreen.disconnect(),
-                lambda: w.requestPip.disconnect(),
-                lambda: w.requestRemove.disconnect(),
-            ):
-                try:
-                    fn()
-                except Exception:
-                    pass
+            safe_disconnect(w.requestToggle)
+            safe_disconnect(w.started)
+            safe_disconnect(w.requestFullscreen)
+            safe_disconnect(w.requestPip)
+            safe_disconnect(w.requestRemove)
             try:
                 w.stop()
             except Exception:
@@ -2008,9 +1910,7 @@ class NewsBoard(QMainWindow):
     def update_grid(self):
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                pass
+            _widget = item.widget()
 
         active_widgets = [w for w in self.video_widgets if w not in self.pip_windows]
         n_active = len(active_widgets)
@@ -2058,7 +1958,6 @@ class NewsBoard(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, w)
             self.list_manager.grid_list_widget.addItem(item)
 
-    # Audio policy
     def toggle_mute_single(self, video_widget: QtTile):
         if self._is_clearing:
             return
@@ -2085,9 +1984,9 @@ class NewsBoard(QMainWindow):
     def _update_active_tile_styles(self):
         for tile in self.video_widgets:
             if tile is self.currently_unmuted and self.settings.audio_policy == "single":
-                tile.setStyleSheet("QFrame { border: 3px solid #2a82da; }")
+                tile.setStyleSheet(tile.styleSheet() + "QFrame#tile { border: 3px solid #2a82da; }")
             else:
-                tile.setStyleSheet("")
+                tile._apply_tile_styles()
 
     def _enforce_audio_policy(self, generation: int):
         if generation != self._audio_enforce_generation:
@@ -2127,13 +2026,11 @@ class NewsBoard(QMainWindow):
         self.allow_auto_select = True
         self._enforce_audio_policy_with_retries()
 
-    # Volume UI
     def on_volume_changed(self, value: int):
         self.active_volume = int(value)
         self.volume_label.setText(tr("UI", f"Volume {self.active_volume}"))
         self._enforce_audio_policy_with_retries()
 
-    # Fullscreen
     def toggle_fullscreen_tile(self, tile: QtTile):
         if self.isFullScreen():
             current_fs_tile = self.fullscreen_tile
@@ -2154,16 +2051,14 @@ class NewsBoard(QMainWindow):
             self.list_manager.hide()
 
             for w in self.video_widgets:
-                if w is not tile:
-                    if self.settings.pause_others_in_fullscreen:
-                        try:
-                            w.player.pause()
-                        except Exception:
-                            pass
+                if w is not tile and self.settings.pause_others_in_fullscreen:
+                    try:
+                        w.player.pause()
+                    except Exception:
+                        pass
 
             self.takeCentralWidget()
             self.setCentralWidget(tile)
-
             self.showFullScreen()
 
     def exit_fullscreen(self):
@@ -2205,7 +2100,6 @@ class NewsBoard(QMainWindow):
                     pass
 
         self.update_grid()
-
         self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton))
 
     def toggle_first_fullscreen(self):
@@ -2263,7 +2157,6 @@ class NewsBoard(QMainWindow):
         for widget in self.video_widgets:
             widget.safe_reload()
 
-    # State
     def save_state(self):
         _, _, state_file, _ = default_files()
         state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2316,7 +2209,6 @@ class NewsBoard(QMainWindow):
         self.save_state()
         super().closeEvent(event)
 
-    # Dialogs
     def open_settings(self):
         dlg = SettingsDialog(self, self.sm)
         result = dlg.exec()
@@ -2338,11 +2230,14 @@ class NewsBoard(QMainWindow):
         text = (
             tr("Help", "Shortcuts:\n")
             + "F: "
-            + tr("Help", "Toggle fullscreen for first tile") + "\n"
+            + tr("Help", "Toggle fullscreen for first tile")
+            + "\n"
             + "Ctrl+Shift+A: "
-            + tr("Help", "Add all feeds") + "\n"
+            + tr("Help", "Add all feeds")
+            + "\n"
             + "Delete: "
-            + tr("Help", "Remove selected from grid list") + "\n"
+            + tr("Help", "Remove selected from grid list")
+            + "\n"
         )
         dlg = QDialog(self)
         dlg.setWindowTitle(tr("Help", "Quick help"))
@@ -2369,9 +2264,6 @@ class NewsBoard(QMainWindow):
         msg.exec()
 
 
-# ---------------- Entry point ----------------
-
-
 def main():
     QCoreApplication.setApplicationName(APP_NAME)
     QCoreApplication.setOrganizationName(APP_ORG)
@@ -2381,11 +2273,11 @@ def main():
     migrate_legacy_settings()
 
     _, _, _, log_file_path = default_files()
+    logger = setup_logging(log_file_path)
 
-    def qt_message_handler(msg_type, msg_log_context, msg_string):
+    def qt_message_handler(msg_type, _msg_log_context, msg_string):
         try:
-            with open(log_file_path, "a", encoding="utf-8") as f:
-                f.write(f"{msg_type.name}: {msg_string}\n")
+            logger.info("%s: %s", msg_type.name, msg_string)
         except Exception:
             pass
 
@@ -2394,7 +2286,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationDisplayName(APP_NAME)
 
-    sm = SettingsManager()
+    sm = SettingsManager(logger)
     sm.load()
 
     win = NewsBoard(sm)
