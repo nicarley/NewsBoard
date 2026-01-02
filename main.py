@@ -84,7 +84,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "25.12.31"
+APP_VERSION = "22.01.02"
 
 
 def tr(ctx: str, text: str) -> str:
