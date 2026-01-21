@@ -84,7 +84,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "22.01.02"
+APP_VERSION = "26.01.21"
 
 
 def tr(ctx: str, text: str) -> str:
@@ -437,6 +437,8 @@ class QtTile(QFrame):
     requestFullscreen = pyqtSignal(object)
     requestRemove = pyqtSignal(object)
     requestPip = pyqtSignal(object)
+    requestActive = pyqtSignal(object)
+    titleChanged = pyqtSignal(str)
 
     def __init__(self, url: str, title: str, settings: AppSettings, parent=None, muted: bool = True):
         super().__init__(parent)
@@ -460,6 +462,7 @@ class QtTile(QFrame):
         self.video_widget.setObjectName("video")
         self.video_widget.setMinimumSize(200, 112)
         self.video_widget.setAccessibleName(tr("Tile", "Video surface"))
+        self.video_widget.installEventFilter(self)
         outer.addWidget(self.video_widget, 1)
 
         self.status_overlay = QLabel(self.video_widget)
@@ -468,6 +471,15 @@ class QtTile(QFrame):
         )
         self.status_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_overlay.hide()
+
+        self.overlay_mute_button = QPushButton(self.video_widget)
+        self.overlay_mute_button.setFixedSize(28, 28)
+        self.overlay_mute_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.overlay_mute_button.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 120); border-radius: 4px; border: 1px solid rgba(255, 255, 255, 50);"
+        )
+        self.overlay_mute_button.clicked.connect(lambda: self.requestToggle.emit(self))
+        self.overlay_mute_button.show()
 
         controls = QWidget(self)
         controls.setObjectName("controls")
@@ -483,26 +495,32 @@ class QtTile(QFrame):
         self.play_button = QPushButton("", controls)
         self.play_button.setAccessibleName(tr("Tile", "Play or pause"))
         self.play_button.setFixedSize(24, 24)
+        self.play_button.setIconSize(QSize(16, 16))
 
         self.mute_button = QPushButton("", controls)
         self.mute_button.setAccessibleName(tr("Tile", "Mute"))
         self.mute_button.setFixedSize(24, 24)
+        self.mute_button.setIconSize(QSize(16, 16))
 
         self.reload_button = QPushButton("", controls)
         self.reload_button.setAccessibleName(tr("Tile", "Reload"))
         self.reload_button.setFixedSize(24, 24)
+        self.reload_button.setIconSize(QSize(16, 16))
 
         self.pip_button = QPushButton("", controls)
         self.pip_button.setAccessibleName(tr("Tile", "Picture-in-Picture"))
         self.pip_button.setFixedSize(24, 24)
+        self.pip_button.setIconSize(QSize(16, 16))
 
         self.fullscreen_button = QPushButton("", controls)
         self.fullscreen_button.setAccessibleName(tr("Tile", "Fullscreen"))
         self.fullscreen_button.setFixedSize(24, 24)
+        self.fullscreen_button.setIconSize(QSize(16, 16))
 
         self.remove_button = QPushButton("", controls)
         self.remove_button.setAccessibleName(tr("Tile", "Remove"))
         self.remove_button.setFixedSize(24, 24)
+        self.remove_button.setIconSize(QSize(16, 16))
 
         row.addWidget(self.label)
         row.addStretch()
@@ -543,13 +561,26 @@ class QtTile(QFrame):
             QFrame#tile { border-radius: 10px; background: rgba(20, 20, 20, 255); }
             QWidget#controls { background: rgba(0, 0, 0, 140); }
             QLabel { padding-left: 6px; }
+            QWidget#controls QPushButton { border: none; padding: 0px; margin: 0px; background: transparent; }
             """
         )
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
+    def eventFilter(self, obj, event):
+        if obj == self.video_widget:
+            if event.type() == QEvent.Type.Resize:
+                self._reposition_overlays()
+            elif event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self.requestActive.emit(self)
+        return super().eventFilter(obj, event)
+
+    def _reposition_overlays(self):
+        w = self.video_widget.width()
+        h = self.video_widget.height()
         if self.status_overlay:
-            self.status_overlay.setGeometry(self.video_widget.geometry())
+            self.status_overlay.setGeometry(0, 0, w, h)
+        if hasattr(self, "overlay_mute_button"):
+            self.overlay_mute_button.move(w - self.overlay_mute_button.width() - 8, 8)
 
     def contextMenuEvent(self, event: QEvent):
         menu = QMenu(self)
@@ -704,11 +735,13 @@ class QtTile(QFrame):
 
     def _refresh_icons(self):
         style = self.style()
-        self.mute_button.setIcon(
-            style.standardIcon(
-                QStyle.StandardPixmap.SP_MediaVolumeMuted if self.is_muted else QStyle.StandardPixmap.SP_MediaVolume
-            )
+        icon = style.standardIcon(
+            QStyle.StandardPixmap.SP_MediaVolumeMuted if self.is_muted else QStyle.StandardPixmap.SP_MediaVolume
         )
+        self.mute_button.setIcon(icon)
+        if hasattr(self, "overlay_mute_button"):
+            self.overlay_mute_button.setIcon(icon)
+
         self.play_button.setIcon(
             style.standardIcon(
                 QStyle.StandardPixmap.SP_MediaPlay if not self.is_playing else QStyle.StandardPixmap.SP_MediaPause
@@ -799,6 +832,7 @@ class QtTile(QFrame):
             if new_title:
                 self.title = new_title
                 self.label.setText(self.title)
+                self.titleChanged.emit(self.title)
 
     def closeEvent(self, e):
         self.stop()
@@ -1209,6 +1243,11 @@ class NewsBoard(QMainWindow):
         the_layout.setSpacing(4)
         self.grid_layout = the_layout
         self.setCentralWidget(self.central_widget_container)
+
+        self.status_bar = self.statusBar()
+        self.status_label = QLabel()
+        self.status_bar.addPermanentWidget(self.status_label)
+        self.status_label.setText(tr("UI", "Ready"))
 
         self.video_widgets: list[QtTile] = []
         self.currently_unmuted: Optional[QtTile] = None
@@ -1802,6 +1841,8 @@ class NewsBoard(QMainWindow):
         vw.requestFullscreen.connect(self.toggle_fullscreen_tile)
         vw.requestPip.connect(self.toggle_pip)
         vw.requestRemove.connect(self.remove_video_widget)
+        vw.requestActive.connect(self.activate_tile_audio)
+        vw.titleChanged.connect(self.on_tile_title_changed)
 
         self.video_widgets.append(vw)
 
@@ -1836,6 +1877,8 @@ class NewsBoard(QMainWindow):
             safe_disconnect(widget.requestFullscreen)
             safe_disconnect(widget.requestPip)
             safe_disconnect(widget.requestRemove)
+            safe_disconnect(widget.requestActive)
+            safe_disconnect(widget.titleChanged)
 
             try:
                 widget.stop()
@@ -1886,6 +1929,8 @@ class NewsBoard(QMainWindow):
             safe_disconnect(w.requestFullscreen)
             safe_disconnect(w.requestPip)
             safe_disconnect(w.requestRemove)
+            safe_disconnect(w.requestActive)
+            safe_disconnect(w.titleChanged)
             try:
                 w.stop()
             except Exception:
@@ -1974,12 +2019,30 @@ class NewsBoard(QMainWindow):
             self.allow_auto_select = True
         self._enforce_audio_policy_with_retries()
 
+    def activate_tile_audio(self, video_widget: QtTile):
+        if self._is_clearing:
+            return
+        
+        if self.settings.audio_policy == "mixed":
+            if video_widget.is_muted:
+                video_widget.set_mute_state(False)
+            return
+
+        if self.currently_unmuted != video_widget:
+            self.currently_unmuted = video_widget
+            self.allow_auto_select = True
+            self._enforce_audio_policy_with_retries()
+
     def on_tile_playing(self, tile: QtTile):
         if self._is_clearing:
             return
         if self.currently_unmuted is None and self.allow_auto_select and self.settings.audio_policy == "single":
             self.currently_unmuted = tile
         self._enforce_audio_policy_with_retries()
+
+    def on_tile_title_changed(self, new_title):
+        if self.sender() == self.currently_unmuted:
+            self.status_label.setText(tr("UI", f"Active: {new_title}"))
 
     def _update_active_tile_styles(self):
         for tile in self.video_widgets:
@@ -1992,6 +2055,7 @@ class NewsBoard(QMainWindow):
         if generation != self._audio_enforce_generation:
             return
         if self.settings.audio_policy == "mixed":
+            self.status_label.setText(tr("UI", "Mixed Audio Mode"))
             self._update_active_tile_styles()
             return
         active = self.currently_unmuted
@@ -2000,6 +2064,9 @@ class NewsBoard(QMainWindow):
                 tile.set_mute_state(True)
         if active:
             active.make_active(self.active_volume)
+            self.status_label.setText(tr("UI", f"Active: {active.title}"))
+        else:
+            self.status_label.setText(tr("UI", "No active audio"))
         self._update_active_tile_styles()
 
     def _enforce_audio_policy_with_retries(self):
