@@ -560,7 +560,7 @@ class QtTile(QFrame):
             """
             QFrame#tile { border-radius: 10px; background: rgba(20, 20, 20, 255); }
             QWidget#controls { background: rgba(0, 0, 0, 140); }
-            QLabel { padding-left: 6px; }
+            QLabel { padding-left: 6px; color: white; }
             QWidget#controls QPushButton { border: none; padding: 0px; margin: 0px; background: transparent; }
             """
         )
@@ -1342,9 +1342,18 @@ class NewsBoard(QMainWindow):
             dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
             dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
             app.setPalette(dark_palette)
+            app.setStyleSheet("""
+                QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }
+                QMenu { background-color: #2b2b2b; color: #ffffff; border: 1px solid #3a3a3a; }
+                QMenu::item { background-color: transparent; padding: 4px 20px; }
+                QMenu::item:selected { background-color: #4282da; color: #ffffff; }
+                QMenuBar { background-color: #1e1e1e; color: #ffffff; }
+                QMenuBar::item { background-color: transparent; padding: 4px 10px; }
+                QMenuBar::item:selected { background-color: #3a3a3a; }
+            """)
         else:
             app.setPalette(QApplication.style().standardPalette())
-        app.setStyleSheet("")
+            app.setStyleSheet("")
 
     def _build_menus(self):
         mb = self.menuBar()
@@ -2046,10 +2055,9 @@ class NewsBoard(QMainWindow):
 
     def _update_active_tile_styles(self):
         for tile in self.video_widgets:
+            tile._apply_tile_styles()
             if tile is self.currently_unmuted and self.settings.audio_policy == "single":
                 tile.setStyleSheet(tile.styleSheet() + "QFrame#tile { border: 3px solid #2a82da; }")
-            else:
-                tile._apply_tile_styles()
 
     def _enforce_audio_policy(self, generation: int):
         if generation != self._audio_enforce_generation:
