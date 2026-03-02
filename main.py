@@ -909,6 +909,11 @@ class PlaylistViewerDialog(QDialog):
         self.setMinimumSize(400, 500)
         layout = QVBoxLayout(self)
 
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText(tr("Playlist", "Search channels..."))
+        self.search_input.textChanged.connect(self.filter_channels)
+        layout.addWidget(self.search_input)
+
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         for name, url in channels:
@@ -921,6 +926,13 @@ class PlaylistViewerDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def filter_channels(self, text: str):
+        text = text.lower().strip()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            name = item.text().lower()
+            item.setHidden(bool(text and text not in name))
 
     def get_selected_channels(self):
         selected_channels = []
@@ -1177,7 +1189,7 @@ class SettingsDialog(QDialog):
         self.theme.addItems(["system", "light", "dark"])
 
         self.layout_mode = QComboBox()
-        self.layout_mode.addItems(["auto", "2x2", "3x3", "1xN", "Nx1"])
+        self.layout_mode.addItems(["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"])
 
         self.populate_fields()
 
@@ -1213,7 +1225,7 @@ class SettingsDialog(QDialog):
         self.privacy_embed_only_youtube.setChecked(s.privacy_embed_only_youtube)
         self.pause_others_in_fullscreen.setChecked(s.pause_others_in_fullscreen)
         self.theme.setCurrentText(s.theme)
-        if s.layout_mode in ["auto", "2x2", "3x3", "1xN", "Nx1"]:
+        if s.layout_mode in ["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"]:
             self.layout_mode.setCurrentText(s.layout_mode)
         else:
             self.layout_mode.setCurrentText("auto")
@@ -1390,6 +1402,11 @@ class NewsBoard(QMainWindow):
                 QMenuBar { background-color: #1e1e1e; color: #ffffff; }
                 QMenuBar::item { background-color: transparent; padding: 4px 10px; }
                 QMenuBar::item:selected { background-color: #3a3a3a; }
+                QLabel { color: #ffffff; }
+                QCheckBox { color: #ffffff; }
+                QComboBox { color: #ffffff; background-color: #333333; border: 1px solid #555; }
+                QComboBox::drop-down { border: none; }
+                QComboBox QAbstractItemView { color: #ffffff; background-color: #333333; selection-background-color: #4282da; }
             """)
         else:
             app.setPalette(QApplication.style().standardPalette())
@@ -1516,7 +1533,7 @@ class NewsBoard(QMainWindow):
         tb.addWidget(self.next_audio_button)
 
         self.layout_combo = QComboBox()
-        self.layout_combo.addItems(["auto", "2x2", "3x3", "1xN", "Nx1"])
+        self.layout_combo.addItems(["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"])
         self.layout_combo.setToolTip(tr("UI", "Grid layout"))
         self.layout_combo.setCurrentText(self.settings.layout_mode)
         self.layout_combo.currentTextChanged.connect(self.on_layout_mode_changed)
@@ -2019,6 +2036,9 @@ class NewsBoard(QMainWindow):
             rows = math.ceil(n_active / cols)
         elif mode == "3x3":
             cols = 3
+            rows = math.ceil(n_active / cols)
+        elif mode == "4x4":
+            cols = 4
             rows = math.ceil(n_active / cols)
         elif mode == "1xN":
             cols = n_active
