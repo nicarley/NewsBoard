@@ -278,6 +278,7 @@ class AppSettings:
     theme: str = "system"
     layout_mode: str = "auto"
     first_run_done: bool = False
+    show_list_manager: bool = True
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=4)
@@ -294,6 +295,7 @@ class AppSettings:
         s.theme = d.get("theme", s.theme)
         s.layout_mode = d.get("layout_mode", s.layout_mode)
         s.first_run_done = bool(d.get("first_run_done", s.first_run_done))
+        s.show_list_manager = bool(d.get("show_list_manager", s.show_list_manager))
         return s
 
 
@@ -1191,6 +1193,8 @@ class SettingsDialog(QDialog):
         self.layout_mode = QComboBox()
         self.layout_mode.addItems(["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"])
 
+        self.show_list_manager = QCheckBox(tr("Settings", "Show Manage Lists"))
+
         self.populate_fields()
 
         form.addRow(tr("Settings", "Audio policy"), self.audio_policy)
@@ -1200,6 +1204,7 @@ class SettingsDialog(QDialog):
         form.addRow(tr("Settings", "Layout"), self.layout_mode)
         form.addRow("", self.privacy_embed_only_youtube)
         form.addRow("", self.pause_others_in_fullscreen)
+        form.addRow("", self.show_list_manager)
 
         line = QHBoxLayout()
         self.btn_export = QPushButton(tr("Settings", "Export profile"))
@@ -1229,6 +1234,7 @@ class SettingsDialog(QDialog):
             self.layout_mode.setCurrentText(s.layout_mode)
         else:
             self.layout_mode.setCurrentText("auto")
+        self.show_list_manager.setChecked(s.show_list_manager)
 
     def do_import(self):
         if self._sm.import_profile(self):
@@ -1244,6 +1250,7 @@ class SettingsDialog(QDialog):
         s.pause_others_in_fullscreen = bool(self.pause_others_in_fullscreen.isChecked())
         s.theme = self.theme.currentText()
         s.layout_mode = self.layout_mode.currentText()
+        s.show_list_manager = self.show_list_manager.isChecked()
         self._sm.save()
 
 
@@ -1329,6 +1336,7 @@ class NewsBoard(QMainWindow):
         self.list_manager.view_playlist_channels_button.clicked.connect(self.view_playlist_channels)
         self.list_manager.remove_playlist_button.clicked.connect(self.remove_playlist)
         self.list_manager.remove_all_playlists_button.clicked.connect(self.remove_all_playlists)
+        self.list_manager.visibilityChanged.connect(self.on_list_manager_visibility_changed)
 
         self._build_top_toolbar()
         self._build_menus()
@@ -1343,6 +1351,7 @@ class NewsBoard(QMainWindow):
         self.load_news_feeds()
         self.load_playlists()
         self.list_manager.tabs.setCurrentIndex(0)
+        self.list_manager.setVisible(self.settings.show_list_manager)
 
         self.load_state()
 
@@ -1478,7 +1487,7 @@ class NewsBoard(QMainWindow):
             tr("UI", "Manage Lists"),
         )
         self.manage_lists_button.setCheckable(True)
-        self.manage_lists_button.setChecked(True)
+        self.manage_lists_button.setChecked(self.settings.show_list_manager)
         self.manage_lists_button.setToolTip(tr("UI", "Show or hide list manager"))
         self.manage_lists_button.toggled.connect(self.list_manager.setVisible)
         self.list_manager.visibilityChanged.connect(self.manage_lists_button.setChecked)
@@ -1583,6 +1592,11 @@ class NewsBoard(QMainWindow):
         self.settings.layout_mode = mode
         self.sm.save()
         self.update_grid()
+
+    def on_list_manager_visibility_changed(self, visible: bool):
+        if self.settings.show_list_manager != visible:
+            self.settings.show_list_manager = visible
+            self.sm.save()
 
     def import_profile_action(self):
         if self.sm.import_profile(self):
@@ -2355,6 +2369,7 @@ class NewsBoard(QMainWindow):
             dlg.apply()
             self.settings = self.sm.settings
             self.apply_theme()
+            self.list_manager.setVisible(self.settings.show_list_manager)
             QMessageBox.information(self, APP_NAME, tr("Settings", "Settings saved"))
 
     def open_diagnostics(self):
