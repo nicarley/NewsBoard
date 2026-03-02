@@ -65,6 +65,7 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
     QVBoxLayout,
     QInputDialog,
+    QStackedLayout
 )
 
 from PyQt6.QtMultimedia import (
@@ -84,7 +85,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "26.01.21"
+APP_VERSION = "26.03.02"
 
 
 def tr(ctx: str, text: str) -> str:
@@ -212,7 +213,7 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
     ydl_opts = {
         "quiet": True,
         "noprogress": True,
-        "format": "best[acodec!=none][protocol*=http]/best[acodec!=none]/best",
+        "format": "bestvideo*+bestaudio/best",
         "nocookie": True,
         "cachedir": False,
         "logger": SilentLogger(),
@@ -458,21 +459,42 @@ class QtTile(QFrame):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        self.video_widget = QVideoWidget(self)
+        # --- IMPORTANT FIX ---
+        # QVideoWidget can render as a native surface that ignores child widgets.
+        # We wrap it in a container with a stacked overlay layer that reliably paints on top.
+        self.video_container = QWidget(self)
+        self.video_container.setObjectName("videoContainer")
+        self.video_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self._stack = QStackedLayout(self.video_container)
+        self._stack.setContentsMargins(0, 0, 0, 0)
+        self._stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+
+        self.video_widget = QVideoWidget(self.video_container)
         self.video_widget.setObjectName("video")
         self.video_widget.setMinimumSize(200, 112)
         self.video_widget.setAccessibleName(tr("Tile", "Video surface"))
         self.video_widget.installEventFilter(self)
-        outer.addWidget(self.video_widget, 1)
 
-        self.status_overlay = QLabel(self.video_widget)
+        self.overlay_layer = QWidget(self.video_container)
+        self.overlay_layer.setObjectName("overlayLayer")
+        self.overlay_layer.setStyleSheet("background: transparent;")
+
+        self._stack.addWidget(self.video_widget)
+        self._stack.addWidget(self.overlay_layer)
+
+        outer.addWidget(self.video_container, 1)
+        # --- END FIX ---
+
+        # Overlays and controls are now children of overlay_layer (NOT video_widget)
+        self.status_overlay = QLabel(self.overlay_layer)
         self.status_overlay.setStyleSheet(
             "background-color: rgba(0, 0, 0, 160); color: white; padding: 4px; font-weight: bold;"
         )
         self.status_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_overlay.hide()
 
-        self.overlay_mute_button = QPushButton(self.video_widget)
+        self.overlay_mute_button = QPushButton(self.overlay_layer)
         self.overlay_mute_button.setFixedSize(28, 28)
         self.overlay_mute_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.overlay_mute_button.setStyleSheet(
@@ -481,7 +503,8 @@ class QtTile(QFrame):
         self.overlay_mute_button.clicked.connect(lambda: self.requestToggle.emit(self))
         self.overlay_mute_button.show()
 
-        controls = QWidget(self)
+        self.controls = QWidget(self.overlay_layer)
+        controls = self.controls
         controls.setObjectName("controls")
         controls.setAccessibleName(tr("Tile", "Controls"))
         row = QHBoxLayout(controls)
@@ -530,7 +553,6 @@ class QtTile(QFrame):
         row.addWidget(self.pip_button)
         row.addWidget(self.fullscreen_button)
         row.addWidget(self.remove_button)
-        outer.addWidget(controls, 0)
 
         self.audio = QAudioOutput(self)
         self.player = QMediaPlayer(self)
@@ -554,6 +576,10 @@ class QtTile(QFrame):
         self.remove_button.clicked.connect(lambda: self.requestRemove.emit(self))
 
         self.play_url(self.url)
+        self.controls.show()
+
+        # Force initial geometry placement once layout settles
+        QTimer.singleShot(0, self._reposition_overlays)
 
     def _apply_tile_styles(self):
         self.setStyleSheet(
@@ -575,12 +601,24 @@ class QtTile(QFrame):
         return super().eventFilter(obj, event)
 
     def _reposition_overlays(self):
-        w = self.video_widget.width()
-        h = self.video_widget.height()
+        # Use the container size (not QVideoWidget), because overlay_layer matches the container
+        w = self.video_container.width()
+        h = self.video_container.height()
+
+        self.overlay_layer.setGeometry(0, 0, w, h)
+
         if self.status_overlay:
             self.status_overlay.setGeometry(0, 0, w, h)
+            self.status_overlay.raise_()
+
         if hasattr(self, "overlay_mute_button"):
             self.overlay_mute_button.move(w - self.overlay_mute_button.width() - 8, 8)
+            self.overlay_mute_button.raise_()
+
+        if hasattr(self, "controls"):
+            ch = self.controls.sizeHint().height()
+            self.controls.setGeometry(0, h - ch, w, ch)
+            self.controls.raise_()
 
     def contextMenuEvent(self, event: QEvent):
         menu = QMenu(self)
@@ -687,7 +725,9 @@ class QtTile(QFrame):
                 self._set_status_overlay(tr("Tile", "Resolving"))
                 self._yt_worker = YtResolveWorker(src, self)
                 self._yt_worker.resolved.connect(lambda direct: self._apply_source(QUrl(direct)))
-                self._yt_worker.failed.connect(lambda _msg: self.label.setText(f"{self.title}  {tr('Tile', 'Resolve failed')}"))
+                self._yt_worker.failed.connect(
+                    lambda _msg: self.label.setText(f"{self.title}  {tr('Tile', 'Resolve failed')}")
+                )
                 self._yt_worker.failed.connect(lambda _msg: self._set_status_overlay(tr("Tile", "Resolve failed")))
                 self._yt_worker.start()
                 return
