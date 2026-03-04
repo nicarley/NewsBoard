@@ -26,6 +26,7 @@ from PyQt6.QtCore import (
     QObject,
     pyqtSignal,
     qInstallMessageHandler,
+    QRectF
 )
 from PyQt6.QtGui import (
     QAction,
@@ -34,6 +35,11 @@ from PyQt6.QtGui import (
     QPalette,
     QColor,
 )
+from PyQt6.QtMultimedia import (
+    QAudioOutput,
+    QMediaPlayer,
+)
+from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -65,14 +71,9 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
     QVBoxLayout,
     QInputDialog,
-    QStackedLayout
+    QGraphicsView,
+    QGraphicsScene
 )
-
-from PyQt6.QtMultimedia import (
-    QAudioOutput,
-    QMediaPlayer,
-)
-from PyQt6.QtMultimediaWidgets import QVideoWidget
 
 try:
     from yt_dlp import YoutubeDL
@@ -434,7 +435,7 @@ class YtResolveWorker(QObject):
         t.start()
 
 
-class QtTile(QFrame):
+class QtTile(QGraphicsView):
     requestToggle = pyqtSignal(object)
     started = pyqtSignal(object)
     requestFullscreen = pyqtSignal(object)
@@ -445,7 +446,6 @@ class QtTile(QFrame):
 
     def __init__(self, url: str, title: str, settings: AppSettings, parent=None, muted: bool = True):
         super().__init__(parent)
-        self.setFrameShape(QFrame.Shape.NoFrame)
         self.setObjectName("tile")
         self.url = url
         self.title = title or tr("Tile", "Video")
@@ -457,46 +457,32 @@ class QtTile(QFrame):
         self.is_playing = False
         self._stall_retries = 0
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        # Setup Graphics View
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setBackgroundBrush(QColor(0, 0, 0))
 
-        # --- IMPORTANT FIX ---
-        # QVideoWidget can render as a native surface that ignores child widgets.
-        # We wrap it in a container with a stacked overlay layer that reliably paints on top.
-        self.video_container = QWidget(self)
-        self.video_container.setObjectName("videoContainer")
-        self.video_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Video Item
+        self.video_item = QGraphicsVideoItem()
+        self.scene.addItem(self.video_item)
 
-        self._stack = QStackedLayout(self.video_container)
-        self._stack.setContentsMargins(0, 0, 0, 0)
-        self._stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+        # Overlay Widget
+        self.overlay_widget = QWidget()
+        self.overlay_widget.setStyleSheet("background: transparent;")
 
-        self.video_widget = QVideoWidget(self.video_container)
-        self.video_widget.setObjectName("video")
-        self.video_widget.setMinimumSize(200, 112)
-        self.video_widget.setAccessibleName(tr("Tile", "Video surface"))
-        self.video_widget.installEventFilter(self)
-
-        self.overlay_layer = QWidget(self.video_container)
-        self.overlay_layer.setObjectName("overlayLayer")
-        self.overlay_layer.setStyleSheet("background: transparent;")
-
-        self._stack.addWidget(self.video_widget)
-        self._stack.addWidget(self.overlay_layer)
-
-        outer.addWidget(self.video_container, 1)
-        # --- END FIX ---
-
-        # Overlays and controls are now children of overlay_layer (NOT video_widget)
-        self.status_overlay = QLabel(self.overlay_layer)
+        # Status Overlay
+        self.status_overlay = QLabel(self.overlay_widget)
         self.status_overlay.setStyleSheet(
             "background-color: rgba(0, 0, 0, 160); color: white; padding: 4px; font-weight: bold;"
         )
         self.status_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_overlay.hide()
 
-        self.overlay_mute_button = QPushButton(self.overlay_layer)
+        # Mute Button (Top Right)
+        self.overlay_mute_button = QPushButton(self.overlay_widget)
         self.overlay_mute_button.setFixedSize(28, 28)
         self.overlay_mute_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.overlay_mute_button.setStyleSheet(
@@ -505,44 +491,44 @@ class QtTile(QFrame):
         self.overlay_mute_button.clicked.connect(lambda: self.requestToggle.emit(self))
         self.overlay_mute_button.show()
 
-        self.controls = QWidget(self.overlay_layer)
-        controls = self.controls
-        controls.setObjectName("controls")
-        controls.setAccessibleName(tr("Tile", "Controls"))
-        row = QHBoxLayout(controls)
+        # Controls (Bottom)
+        self.controls = QWidget(self.overlay_widget)
+        self.controls.setObjectName("controls")
+        self.controls.setAccessibleName(tr("Tile", "Controls"))
+        row = QHBoxLayout(self.controls)
         row.setContentsMargins(6, 4, 6, 4)
         row.setSpacing(6)
 
-        self.label = QLabel(self.title, controls)
+        self.label = QLabel(self.title, self.controls)
         self.label.setAccessibleName(tr("Tile", "Title"))
         self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        self.play_button = QPushButton("", controls)
+        self.play_button = QPushButton("", self.controls)
         self.play_button.setAccessibleName(tr("Tile", "Play or pause"))
         self.play_button.setFixedSize(24, 24)
         self.play_button.setIconSize(QSize(16, 16))
 
-        self.mute_button = QPushButton("", controls)
+        self.mute_button = QPushButton("", self.controls)
         self.mute_button.setAccessibleName(tr("Tile", "Mute"))
         self.mute_button.setFixedSize(24, 24)
         self.mute_button.setIconSize(QSize(16, 16))
 
-        self.reload_button = QPushButton("", controls)
+        self.reload_button = QPushButton("", self.controls)
         self.reload_button.setAccessibleName(tr("Tile", "Reload"))
         self.reload_button.setFixedSize(24, 24)
         self.reload_button.setIconSize(QSize(16, 16))
 
-        self.pip_button = QPushButton("", controls)
+        self.pip_button = QPushButton("", self.controls)
         self.pip_button.setAccessibleName(tr("Tile", "Picture-in-Picture"))
         self.pip_button.setFixedSize(24, 24)
         self.pip_button.setIconSize(QSize(16, 16))
 
-        self.fullscreen_button = QPushButton("", controls)
+        self.fullscreen_button = QPushButton("", self.controls)
         self.fullscreen_button.setAccessibleName(tr("Tile", "Fullscreen"))
         self.fullscreen_button.setFixedSize(24, 24)
         self.fullscreen_button.setIconSize(QSize(16, 16))
 
-        self.remove_button = QPushButton("", controls)
+        self.remove_button = QPushButton("", self.controls)
         self.remove_button.setAccessibleName(tr("Tile", "Remove"))
         self.remove_button.setFixedSize(24, 24)
         self.remove_button.setIconSize(QSize(16, 16))
@@ -556,10 +542,15 @@ class QtTile(QFrame):
         row.addWidget(self.fullscreen_button)
         row.addWidget(self.remove_button)
 
+        # Add Overlay to Scene via Proxy
+        self.proxy = self.scene.addWidget(self.overlay_widget)
+        self.proxy.setZValue(10)  # Ensure it's on top
+
+        # Media Player
         self.audio = QAudioOutput(self)
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.video_widget)
+        self.player.setVideoOutput(self.video_item)
 
         self.audio.setMuted(self.is_muted)
         self.audio.setVolume(0.0 if self.is_muted else float(self._settings.volume_default) / 100.0)
@@ -580,47 +571,41 @@ class QtTile(QFrame):
         self.play_url(self.url)
         self.controls.show()
 
-        # Force initial geometry placement once layout settles
-        QTimer.singleShot(0, self._reposition_overlays)
-
     def _apply_tile_styles(self):
         self.setStyleSheet(
             """
-            QFrame#tile { border-radius: 10px; background: rgba(20, 20, 20, 255); }
+            QGraphicsView#tile { border-radius: 10px; background: rgba(20, 20, 20, 255); border: none; }
             QWidget#controls { background: rgba(0, 0, 0, 140); }
             QLabel { padding-left: 6px; color: white; }
             QWidget#controls QPushButton { border: none; padding: 0px; margin: 0px; background: transparent; }
             """
         )
 
-    def eventFilter(self, obj, event):
-        if obj == self.video_widget:
-            if event.type() == QEvent.Type.Resize:
-                self._reposition_overlays()
-            elif event.type() == QEvent.Type.MouseButtonPress:
-                if event.button() == Qt.MouseButton.LeftButton:
-                    self.requestActive.emit(self)
-        return super().eventFilter(obj, event)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        rect = QRectF(self.rect())
+        self.scene.setSceneRect(rect)
+        self.video_item.setSize(rect.size())
+        self.proxy.setGeometry(rect)
 
-    def _reposition_overlays(self):
-        # Use the container size (not QVideoWidget), because overlay_layer matches the container
-        w = self.video_container.width()
-        h = self.video_container.height()
-
-        self.overlay_layer.setGeometry(0, 0, w, h)
-
+        # Reposition internal overlay elements
+        w = self.width()
+        h = self.height()
+        
         if self.status_overlay:
             self.status_overlay.setGeometry(0, 0, w, h)
-            self.status_overlay.raise_()
 
         if hasattr(self, "overlay_mute_button"):
             self.overlay_mute_button.move(w - self.overlay_mute_button.width() - 8, 8)
-            self.overlay_mute_button.raise_()
 
         if hasattr(self, "controls"):
             ch = self.controls.sizeHint().height()
             self.controls.setGeometry(0, h - ch, w, ch)
-            self.controls.raise_()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.requestActive.emit(self)
+        super().mousePressEvent(event)
 
     def contextMenuEvent(self, event: QEvent):
         menu = QMenu(self)
@@ -823,7 +808,7 @@ class QtTile(QFrame):
 
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.video_widget)
+        self.player.setVideoOutput(self.video_item)
         self.player.mediaStatusChanged.connect(self.on_media_status_changed)
         self.player.playbackStateChanged.connect(self.on_playback_state_changed)
 
@@ -2131,7 +2116,7 @@ class NewsBoard(QMainWindow):
         for tile in self.video_widgets:
             tile._apply_tile_styles()
             if tile is self.currently_unmuted and self.settings.audio_policy == "single":
-                tile.setStyleSheet(tile.styleSheet() + "QFrame#tile { border: 3px solid #2a82da; }")
+                tile.setStyleSheet(tile.styleSheet() + "QGraphicsView#tile { border: 3px solid #2a82da; }")
 
     def _enforce_audio_policy(self, generation: int):
         if generation != self._audio_enforce_generation:
