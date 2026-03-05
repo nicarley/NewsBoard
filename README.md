@@ -1,41 +1,79 @@
 # NewsBoard
 
-A desktop application for viewing multiple video streams simultaneously, designed for news junkies and information enthusiasts.
+NewsBoard is a desktop multiview app for monitoring live video streams from multiple sources in one place.
 
 <img src="https://raw.githubusercontent.com/nicarley/NewsBoard/refs/heads/master/resources/screenshot.png" />
 
-*   **Multi-source viewing:** Watch video streams from various sources like YouTube and other direct stream URLs.
-*   **Grid layout:** Arrange multiple video tiles in a grid (up to 4x4) for a comprehensive overview.
-*   **Feed management:** Curate a list of your favorite news feeds for quick access.
-*   **Playlist support:** Import and manage M3U playlists with search functionality.
-*   **Single-speaker mode:** Automatically mutes all but one video stream, with the option to manually select the active speaker.
-*   **Volume control:** Adjust the volume of the active video stream.
-*   **Fullscreen mode:** View a single video stream in fullscreen for a more focused experience.
-*   **Persistent state:** The application saves your video grid, settings, and layout preferences for the next session.
-*   **Customizable UI:** Toggle the "Manage Lists" panel visibility and choose between light and dark themes.
+## What It Can Do
 
-## Dependencies
+- Monitor many streams at once in an adaptive grid (`auto`, `2x2`, `3x3`, `4x4`, `1xN`, `Nx1`).
+- Mix source types: direct stream URLs, YouTube links, and pasted iframe embeds.
+- Manage reusable **News Feeds** (add/edit/remove/reorder/filter and add selected or all to the grid).
+- Manage **M3U playlists** from URL or file:
+  - import and search channels
+  - add selected channels or all channels
+  - export the current grid as an `.m3u` file
+- Use two audio strategies:
+  - `single`: one active tile at a time
+  - `mixed`: independent audio per tile
+- Control playback per tile with quick actions:
+  - mute/unmute
+  - play/pause
+  - reload
+  - rename
+  - copy URL
+  - remove
+- Use **Picture-in-Picture (PiP)** for a floating always-on-top tile.
+- Toggle tile fullscreen or fullscreen the entire grid.
+- Set global active-tile volume, mute all, and cycle active audio.
+- Persist session data automatically (feeds, playlists, app settings, tile state/layout).
+- Import/export full user profiles (settings + feeds + playlists + state) as JSON.
+- Run built-in diagnostics (platform info, media support checks, data paths, log view/copy report).
+- Customize behavior through settings:
+  - theme (`system`, `light`, `dark`)
+  - layout default
+  - YouTube mode (`direct_when_possible`, `embed_only`)
+  - pause non-fullscreen tiles in fullscreen
+  - show/hide Manage Lists panel
 
-*   [PyQt6](https://pypi.org/project/PyQt6/)
-*   [yt-dlp](https://pypi.org/project/yt-dlp/) (optional, for playing YouTube videos)
+## Requirements
 
-To install the dependencies, run:
+- Python 3.10+ recommended
+- [PyQt6](https://pypi.org/project/PyQt6/)
+- [requests](https://pypi.org/project/requests/)
+- [yt-dlp](https://pypi.org/project/yt-dlp/) (optional, enables YouTube direct resolution)
+
+Install dependencies:
 
 ```bash
-pip install PyQt6 yt-dlp
+pip install PyQt6 requests yt-dlp
 ```
 
-## Usage
-
-1.  Clone the repository or download the source code.
-2.  Install the dependencies as described above.
-3.  Run the `main.py` file:
+## Run
 
 ```bash
 python main.py
 ```
 
-4.  Use the "Manage Lists" panel to add, edit, or remove news feeds and playlists.
-5.  Add videos to the grid by selecting feeds and clicking "Add Selected" or by pasting a video URL or iframe tag into the input field and clicking "Add Video".
-6.  Click the mute/unmute button on a video tile to control which stream's audio is active.
-7.  Enjoy your personalized news board!
+## Quick Start
+
+1. Open **Manage Lists** to curate News Feeds and Playlists.
+2. Add streams via:
+   - feed selection (`Add Selected` / `Add All`)
+   - URL/iframe in the top bar (`Add Video`)
+   - M3U import (URL or file)
+3. Use the tile controls or context menu to manage each stream.
+4. Use **Settings** for audio policy, layout behavior, theme, and profile import/export.
+5. Use **Tools -> Diagnostics** when troubleshooting media or environment issues.
+
+## Keyboard Shortcuts
+
+- `F`: Toggle fullscreen for first tile
+- `Ctrl+Shift+A`: Add all feeds
+- `Delete`: Remove selected stream from grid list
+
+## Notes
+
+- App data (settings, feeds, playlists, state, logs) is stored in your platform app-data directory.
+- On Linux, full stream support may require GStreamer multimedia packages.
+- Third-party streams and embeds remain subject to each provider's terms.
