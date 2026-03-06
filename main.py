@@ -9,8 +9,9 @@ import sys
 import threading
 from collections import deque
 from dataclasses import dataclass, asdict, field
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qsl, urlparse
 
 import requests
@@ -56,7 +57,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -72,7 +72,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QInputDialog,
     QGraphicsView,
-    QGraphicsScene
+    QGraphicsScene,
+    QListWidgetItem,
 )
 
 try:
@@ -86,7 +87,8 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "26.03.02"
+APP_VERSION = "26.03.06"
+LAYOUT_MODES = ["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"]
 
 
 def tr(ctx: str, text: str) -> str:
@@ -268,6 +270,31 @@ def parse_m3u(content: str) -> list[Tuple[str, str]]:
     return channels
 
 
+def default_feed_profile(url: str) -> Dict[str, Any]:
+    return {
+        "url": url,
+        "start_muted": True,
+        "preferred_volume": 85,
+        "preferred_backend": "auto",
+        "low_latency": False,
+    }
+
+
+def normalize_feed_record(record: Any) -> Dict[str, Any]:
+    if isinstance(record, str):
+        return default_feed_profile(record)
+    if isinstance(record, dict):
+        url = str(record.get("url", "")).strip()
+        out = default_feed_profile(url)
+        out["start_muted"] = bool(record.get("start_muted", out["start_muted"]))
+        out["preferred_volume"] = max(0, min(100, int(record.get("preferred_volume", out["preferred_volume"]))))
+        backend = str(record.get("preferred_backend", out["preferred_backend"])).strip().lower()
+        out["preferred_backend"] = backend if backend in ("auto", "qt", "embed") else "auto"
+        out["low_latency"] = bool(record.get("low_latency", out["low_latency"]))
+        return out
+    return default_feed_profile("")
+
+
 @dataclass
 class AppSettings:
     audio_policy: str = "single"
@@ -280,6 +307,15 @@ class AppSettings:
     layout_mode: str = "auto"
     first_run_done: bool = False
     show_list_manager: bool = True
+    compact_ui: bool = False
+    ui_scale_percent: int = 100
+    max_auto_retries: int = 6
+    auto_retry_backoff_ms: int = 3000
+    audio_follow_selection: bool = True
+    audio_fade_ms: int = 180
+    show_operational_overlays: bool = True
+    watchdog_enabled: bool = True
+    watchdog_down_seconds: int = 20
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=4)
@@ -297,6 +333,15 @@ class AppSettings:
         s.layout_mode = d.get("layout_mode", s.layout_mode)
         s.first_run_done = bool(d.get("first_run_done", s.first_run_done))
         s.show_list_manager = bool(d.get("show_list_manager", s.show_list_manager))
+        s.compact_ui = bool(d.get("compact_ui", s.compact_ui))
+        s.ui_scale_percent = max(80, min(160, int(d.get("ui_scale_percent", s.ui_scale_percent))))
+        s.max_auto_retries = max(1, min(25, int(d.get("max_auto_retries", s.max_auto_retries))))
+        s.auto_retry_backoff_ms = max(250, min(30000, int(d.get("auto_retry_backoff_ms", s.auto_retry_backoff_ms))))
+        s.audio_follow_selection = bool(d.get("audio_follow_selection", s.audio_follow_selection))
+        s.audio_fade_ms = max(0, min(2000, int(d.get("audio_fade_ms", s.audio_fade_ms))))
+        s.show_operational_overlays = bool(d.get("show_operational_overlays", s.show_operational_overlays))
+        s.watchdog_enabled = bool(d.get("watchdog_enabled", s.watchdog_enabled))
+        s.watchdog_down_seconds = max(5, min(300, int(d.get("watchdog_down_seconds", s.watchdog_down_seconds))))
         return s
 
 
@@ -443,8 +488,17 @@ class QtTile(QGraphicsView):
     requestPip = pyqtSignal(object)
     requestActive = pyqtSignal(object)
     titleChanged = pyqtSignal(str)
+    healthChanged = pyqtSignal(object)
 
-    def __init__(self, url: str, title: str, settings: AppSettings, parent=None, muted: bool = True):
+    def __init__(
+            self,
+            url: str,
+            title: str,
+            settings: AppSettings,
+            parent=None,
+            muted: bool = True,
+            feed_profile: Optional[Dict[str, Any]] = None,
+    ):
         super().__init__(parent)
         self.setObjectName("tile")
         self.url = url
@@ -453,9 +507,26 @@ class QtTile(QGraphicsView):
         self.is_fullscreen_tile = False
         self.is_pip_tile = False
         self._settings = settings
+        self.feed_profile = feed_profile or {}
+        self.force_backend = str(self.feed_profile.get("preferred_backend", "auto")).lower()
+        if self.force_backend not in ("auto", "qt", "embed"):
+            self.force_backend = "auto"
+        self.low_latency = bool(self.feed_profile.get("low_latency", False))
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.is_playing = False
         self._stall_retries = 0
+        self.last_error = ""
+        self.reconnect_count = 0
+        self.health_state = "idle"
+        self.last_health_change = datetime.now()
+        self.last_playing_at: Optional[datetime] = None
+        self.last_load_start: Optional[datetime] = None
+        self.buffering_seconds = 0.0
+        self.estimated_latency_ms = 0
+        self.down_since: Optional[datetime] = None
+        self._latency_timer = QTimer(self)
+        self._latency_timer.setInterval(1000)
+        self._latency_timer.timeout.connect(self._tick_overlay_metrics)
 
         # Setup Graphics View
         self.scene = QGraphicsScene(self)
@@ -480,6 +551,20 @@ class QtTile(QGraphicsView):
         )
         self.status_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_overlay.hide()
+
+        self.health_badge = QLabel(self.overlay_widget)
+        self.health_badge.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 160); color: white; padding: 3px 6px; border-radius: 4px; font-weight: bold;"
+        )
+        self.health_badge.show()
+
+        self.ops_overlay = QLabel(self.overlay_widget)
+        self.ops_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 140); color: #e8edf2; padding: 3px 6px; border-radius: 4px;"
+        )
+        self.ops_overlay.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.ops_overlay.setWordWrap(True)
+        self.ops_overlay.show()
 
         # Mute Button (Top Right)
         self.overlay_mute_button = QPushButton(self.overlay_widget)
@@ -569,6 +654,8 @@ class QtTile(QGraphicsView):
         self.remove_button.clicked.connect(lambda: self.requestRemove.emit(self))
 
         self.play_url(self.url)
+        self._latency_timer.start()
+        self._set_health("idle")
         self.controls.show()
 
     def _apply_tile_styles(self):
@@ -597,6 +684,12 @@ class QtTile(QGraphicsView):
 
         if hasattr(self, "overlay_mute_button"):
             self.overlay_mute_button.move(w - self.overlay_mute_button.width() - 8, 8)
+
+        if hasattr(self, "health_badge"):
+            self.health_badge.move(8, 8)
+
+        if hasattr(self, "ops_overlay"):
+            self.ops_overlay.setGeometry(8, 38, min(320, max(120, w - 16)), 52)
 
         if hasattr(self, "controls"):
             ch = self.controls.sizeHint().height()
@@ -669,30 +762,111 @@ class QtTile(QGraphicsView):
         else:
             self.status_overlay.hide()
 
+    def _set_health(self, state: str, error: str = ""):
+        self.health_state = state
+        self.last_health_change = datetime.now()
+        if error:
+            self.last_error = error
+        if state in ("error", "reconnecting", "stalled", "loading", "buffering"):
+            if self.down_since is None:
+                self.down_since = datetime.now()
+        elif state == "live":
+            self.down_since = None
+
+        colors = {
+            "live": "#2e7d32",
+            "loading": "#1565c0",
+            "buffering": "#ef6c00",
+            "stalled": "#ef6c00",
+            "reconnecting": "#6a1b9a",
+            "error": "#b71c1c",
+            "idle": "#37474f",
+        }
+        text_map = {
+            "live": tr("Tile", "LIVE"),
+            "loading": tr("Tile", "LOADING"),
+            "buffering": tr("Tile", "BUFFERING"),
+            "stalled": tr("Tile", "STALLED"),
+            "reconnecting": tr("Tile", "RECONNECTING"),
+            "error": tr("Tile", "ERROR"),
+            "idle": tr("Tile", "IDLE"),
+        }
+        color = colors.get(state, "#37474f")
+        self.health_badge.setText(text_map.get(state, state.upper()))
+        self.health_badge.setStyleSheet(
+            f"background-color: {color}; color: white; padding: 3px 6px; border-radius: 4px; font-weight: bold;"
+        )
+        self._refresh_ops_overlay()
+        self.healthChanged.emit(self)
+
+    def _tick_overlay_metrics(self):
+        if self.health_state in ("buffering", "loading", "stalled", "reconnecting"):
+            self.buffering_seconds += 1.0
+        self._refresh_ops_overlay()
+
+    def _refresh_ops_overlay(self):
+        if not self._settings.show_operational_overlays:
+            self.health_badge.hide()
+            self.ops_overlay.hide()
+            return
+        self.health_badge.show()
+        self.ops_overlay.show()
+        now_txt = datetime.now().strftime("%H:%M:%S")
+        down_txt = "-"
+        if self.down_since is not None:
+            down_txt = f"{int((datetime.now() - self.down_since).total_seconds())}s"
+        err_txt = self.last_error if self.last_error else "-"
+        ops = (
+            f"{tr('Tile', 'Clock')}: {now_txt}    "
+            f"{tr('Tile', 'Latency')}: {self.estimated_latency_ms}ms\n"
+            f"{tr('Tile', 'Reconnects')}: {self.reconnect_count}    "
+            f"{tr('Tile', 'Down')}: {down_txt}\n"
+            f"{tr('Tile', 'Error')}: {err_txt}"
+        )
+        self.ops_overlay.setText(ops)
+
     def on_media_status_changed(self, status: QMediaPlayer.MediaStatus):
         if status == QMediaPlayer.MediaStatus.LoadingMedia:
+            self.last_load_start = datetime.now()
             self.label.setText(f"{self.title}  {tr('Tile', 'Loading')}")
+            self._set_health("loading")
             self._set_status_overlay(tr("Tile", "Loading"))
         elif status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
             self.label.setText(self.title)
             self._stall_retries = 0
+            self.last_playing_at = datetime.now()
+            if self.last_load_start is not None:
+                self.estimated_latency_ms = int(
+                    max(0.0, (datetime.now() - self.last_load_start).total_seconds()) * 1000)
+            self._set_health("live")
             self._set_status_overlay("")
         elif status == QMediaPlayer.MediaStatus.InvalidMedia:
             self.label.setText(f"{self.title}  {tr('Tile', 'Invalid media')}")
             self._stall_retries += 1
+            self._set_health("error", tr("Tile", "Invalid media"))
             self._set_status_overlay(tr("Tile", "Invalid media"))
+            if self._stall_retries <= self._settings.max_auto_retries:
+                self.reconnect_count += 1
+                QTimer.singleShot(self._settings.auto_retry_backoff_ms, self.safe_reload)
         elif status == QMediaPlayer.MediaStatus.StalledMedia:
             self.label.setText(f"{self.title}  {tr('Tile', 'Stalled')}")
             self._stall_retries += 1
+            self._set_health("stalled", tr("Tile", "Stalled"))
             self._set_status_overlay(tr("Tile", "Stalled, retrying"))
-            if self._stall_retries <= 3:
-                QTimer.singleShot(2000, self.safe_reload)
+            if self._stall_retries <= self._settings.max_auto_retries:
+                self.reconnect_count += 1
+                self._set_health("reconnecting")
+                QTimer.singleShot(self._settings.auto_retry_backoff_ms, self.safe_reload)
         elif status == QMediaPlayer.MediaStatus.BufferingMedia:
             self.label.setText(f"{self.title}  {tr('Tile', 'Buffering')}")
+            self._set_health("buffering")
             self._set_status_overlay(tr("Tile", "Buffering"))
 
     def on_playback_state_changed(self, state: QMediaPlayer.PlaybackState):
         self.is_playing = state == QMediaPlayer.PlaybackState.PlayingState
+        if self.is_playing:
+            self.last_playing_at = datetime.now()
+            self._set_health("live")
         self._refresh_icons()
 
     def toggle_play(self):
@@ -703,8 +877,10 @@ class QtTile(QGraphicsView):
             self.player.play()
 
     def play_url(self, url: str):
-        chosen = choose_backend(url, self._settings)
+        chosen = self.force_backend if self.force_backend != "auto" else choose_backend(url, self._settings)
         src = build_embed_or_watch(url)
+        self.last_load_start = datetime.now()
+        self._set_health("loading")
 
         if chosen in ("qt", "embed") and is_youtube_url(src):
             if YT_AVAILABLE:
@@ -715,11 +891,13 @@ class QtTile(QGraphicsView):
                 self._yt_worker.failed.connect(
                     lambda _msg: self.label.setText(f"{self.title}  {tr('Tile', 'Resolve failed')}")
                 )
+                self._yt_worker.failed.connect(lambda _msg: self._set_health("error", tr("Tile", "Resolve failed")))
                 self._yt_worker.failed.connect(lambda _msg: self._set_status_overlay(tr("Tile", "Resolve failed")))
                 self._yt_worker.start()
                 return
             else:
                 self.label.setText(f"{self.title}  {tr('Tile', 'yt dlp not installed')}")
+                self._set_health("error", tr("Tile", "yt dlp not installed"))
                 self._set_status_overlay(tr("Tile", "yt dlp not installed"))
                 return
 
@@ -760,6 +938,10 @@ class QtTile(QGraphicsView):
         self.is_pip_tile = is_pip
         self._refresh_icons()
 
+    def set_overlay_visibility(self, show_ops: bool):
+        self._settings.show_operational_overlays = show_ops
+        self._refresh_ops_overlay()
+
     def _refresh_icons(self):
         style = self.style()
         icon = style.standardIcon(
@@ -793,6 +975,7 @@ class QtTile(QGraphicsView):
         self.remove_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
 
     def safe_reload(self):
+        self._set_health("reconnecting")
         try:
             self.player.stop()
         except Exception:
@@ -819,6 +1002,10 @@ class QtTile(QGraphicsView):
         self.play_url(self.url)
 
     def stop(self):
+        try:
+            self._latency_timer.stop()
+        except Exception:
+            pass
         safe_disconnect(self.player.playbackStateChanged)
         safe_disconnect(self.player.mediaStatusChanged)
         safe_disconnect(self.mute_button.clicked)
@@ -867,15 +1054,32 @@ class QtTile(QGraphicsView):
 
 
 class FeedDialog(QDialog):
-    def __init__(self, parent=None, name="", url=""):
+    def __init__(self, parent=None, name="", url="", profile: Optional[Dict[str, Any]] = None,
+                 show_profile: bool = True):
         super().__init__(parent)
         self.setWindowTitle(tr("Feed", "Add or Edit Feed"))
         form = QFormLayout(self)
+        p = normalize_feed_record(profile or {"url": url})
         self.name_input = QLineEdit(name)
-        self.url_input = QLineEdit(url)
+        self.url_input = QLineEdit(p["url"] if p["url"] else url)
         self.name_label = QLabel(tr("Feed", "Name"))
         form.addRow(self.name_label, self.name_input)
         form.addRow(tr("Feed", "URL"), self.url_input)
+        self.start_muted = QCheckBox(tr("Feed", "Start muted"))
+        self.start_muted.setChecked(bool(p["start_muted"]))
+        self.preferred_volume = QSlider(Qt.Orientation.Horizontal)
+        self.preferred_volume.setRange(0, 100)
+        self.preferred_volume.setValue(int(p["preferred_volume"]))
+        self.preferred_backend = QComboBox()
+        self.preferred_backend.addItems(["auto", "qt", "embed"])
+        self.preferred_backend.setCurrentText(str(p["preferred_backend"]))
+        self.low_latency = QCheckBox(tr("Feed", "Low latency mode"))
+        self.low_latency.setChecked(bool(p["low_latency"]))
+        if show_profile:
+            form.addRow("", self.start_muted)
+            form.addRow(tr("Feed", "Preferred volume"), self.preferred_volume)
+            form.addRow(tr("Feed", "Preferred backend"), self.preferred_backend)
+            form.addRow("", self.low_latency)
         box = QDialogButtonBox()
         box.setStandardButtons(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         box.accepted.connect(self.accept)
@@ -887,6 +1091,15 @@ class FeedDialog(QDialog):
 
     def get_feed_data(self):
         return self.name_input.text(), self.url_input.text()
+
+    def get_profile_data(self) -> Dict[str, Any]:
+        return {
+            "url": self.url_input.text().strip(),
+            "start_muted": bool(self.start_muted.isChecked()),
+            "preferred_volume": int(self.preferred_volume.value()),
+            "preferred_backend": self.preferred_backend.currentText(),
+            "low_latency": bool(self.low_latency.isChecked()),
+        }
 
 
 class PlaylistViewerDialog(QDialog):
@@ -1072,6 +1285,34 @@ class ListManager(QDockWidget):
         self.grid_layout.addWidget(self.grid_list_widget, 1)
         self.tabs.addTab(self.grid_tab, tr("List", "Grid"))
 
+        self.scenes_tab = QWidget()
+        self.scenes_layout = QVBoxLayout(self.scenes_tab)
+        self.scenes_layout.setContentsMargins(6, 6, 6, 6)
+        self.scenes_layout.setSpacing(6)
+
+        self.scenes_toolbar = QWidget()
+        self.scenes_toolbar_layout = QHBoxLayout(self.scenes_toolbar)
+        self.scenes_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        self.scenes_toolbar_layout.setSpacing(6)
+
+        self.play_scene_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay), tr("List", "Play"))
+        self.delete_scene_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon),
+                                               tr("List", "Delete"))
+        self.play_scene_button.setAccessibleName(tr("List", "Play scene"))
+        self.delete_scene_button.setAccessibleName(tr("List", "Delete scene"))
+
+        self.scenes_toolbar_layout.addWidget(self.play_scene_button)
+        self.scenes_toolbar_layout.addWidget(self.delete_scene_button)
+        self.scenes_toolbar_layout.addStretch()
+
+        self.scenes_list_widget = QListWidget()
+        self.scenes_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.scenes_list_widget.setAccessibleName(tr("List", "Scenes"))
+
+        self.scenes_layout.addWidget(self.scenes_toolbar, 0)
+        self.scenes_layout.addWidget(self.scenes_list_widget, 1)
+        self.tabs.addTab(self.scenes_tab, tr("List", "Scenes"))
+
     def filter_feeds(self, text: str):
         text = text.lower().strip()
         for i in range(self.news_feed_list_widget.count()):
@@ -1176,9 +1417,25 @@ class SettingsDialog(QDialog):
         self.theme.addItems(["system", "light", "dark"])
 
         self.layout_mode = QComboBox()
-        self.layout_mode.addItems(["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"])
+        self.layout_mode.addItems(LAYOUT_MODES)
 
         self.show_list_manager = QCheckBox(tr("Settings", "Show Manage Lists"))
+        self.compact_ui = QCheckBox(tr("Settings", "Compact UI"))
+        self.audio_follow_selection = QCheckBox(tr("Settings", "Audio follows selected tile"))
+        self.show_operational_overlays = QCheckBox(tr("Settings", "Show tile operational overlays"))
+        self.watchdog_enabled = QCheckBox(tr("Settings", "Enable stream watchdog"))
+
+        self.ui_scale_percent = QSlider(Qt.Orientation.Horizontal)
+        self.ui_scale_percent.setRange(80, 160)
+        self.audio_fade_ms = QSlider(Qt.Orientation.Horizontal)
+        self.audio_fade_ms.setRange(0, 2000)
+        self.max_auto_retries = QSlider(Qt.Orientation.Horizontal)
+        self.max_auto_retries.setRange(1, 25)
+        self.auto_retry_backoff_ms = QSlider(Qt.Orientation.Horizontal)
+        self.auto_retry_backoff_ms.setRange(250, 30000)
+        self.auto_retry_backoff_ms.setSingleStep(250)
+        self.watchdog_down_seconds = QSlider(Qt.Orientation.Horizontal)
+        self.watchdog_down_seconds.setRange(5, 300)
 
         self.populate_fields()
 
@@ -1187,9 +1444,18 @@ class SettingsDialog(QDialog):
         form.addRow(tr("Settings", "YouTube mode"), self.yt_mode)
         form.addRow(tr("Settings", "Theme"), self.theme)
         form.addRow(tr("Settings", "Layout"), self.layout_mode)
+        form.addRow(tr("Settings", "UI scale %"), self.ui_scale_percent)
+        form.addRow(tr("Settings", "Audio fade ms"), self.audio_fade_ms)
+        form.addRow(tr("Settings", "Auto retries"), self.max_auto_retries)
+        form.addRow(tr("Settings", "Retry backoff ms"), self.auto_retry_backoff_ms)
+        form.addRow(tr("Settings", "Watchdog down sec"), self.watchdog_down_seconds)
         form.addRow("", self.privacy_embed_only_youtube)
         form.addRow("", self.pause_others_in_fullscreen)
         form.addRow("", self.show_list_manager)
+        form.addRow("", self.compact_ui)
+        form.addRow("", self.audio_follow_selection)
+        form.addRow("", self.show_operational_overlays)
+        form.addRow("", self.watchdog_enabled)
 
         line = QHBoxLayout()
         self.btn_export = QPushButton(tr("Settings", "Export profile"))
@@ -1215,11 +1481,20 @@ class SettingsDialog(QDialog):
         self.privacy_embed_only_youtube.setChecked(s.privacy_embed_only_youtube)
         self.pause_others_in_fullscreen.setChecked(s.pause_others_in_fullscreen)
         self.theme.setCurrentText(s.theme)
-        if s.layout_mode in ["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"]:
+        if s.layout_mode in LAYOUT_MODES:
             self.layout_mode.setCurrentText(s.layout_mode)
         else:
             self.layout_mode.setCurrentText("auto")
         self.show_list_manager.setChecked(s.show_list_manager)
+        self.compact_ui.setChecked(s.compact_ui)
+        self.ui_scale_percent.setValue(s.ui_scale_percent)
+        self.max_auto_retries.setValue(s.max_auto_retries)
+        self.auto_retry_backoff_ms.setValue(s.auto_retry_backoff_ms)
+        self.audio_follow_selection.setChecked(s.audio_follow_selection)
+        self.audio_fade_ms.setValue(s.audio_fade_ms)
+        self.show_operational_overlays.setChecked(s.show_operational_overlays)
+        self.watchdog_enabled.setChecked(s.watchdog_enabled)
+        self.watchdog_down_seconds.setValue(s.watchdog_down_seconds)
 
     def do_import(self):
         if self._sm.import_profile(self):
@@ -1236,6 +1511,15 @@ class SettingsDialog(QDialog):
         s.theme = self.theme.currentText()
         s.layout_mode = self.layout_mode.currentText()
         s.show_list_manager = self.show_list_manager.isChecked()
+        s.compact_ui = bool(self.compact_ui.isChecked())
+        s.ui_scale_percent = int(self.ui_scale_percent.value())
+        s.max_auto_retries = int(self.max_auto_retries.value())
+        s.auto_retry_backoff_ms = int(self.auto_retry_backoff_ms.value())
+        s.audio_follow_selection = bool(self.audio_follow_selection.isChecked())
+        s.audio_fade_ms = int(self.audio_fade_ms.value())
+        s.show_operational_overlays = bool(self.show_operational_overlays.isChecked())
+        s.watchdog_enabled = bool(self.watchdog_enabled.isChecked())
+        s.watchdog_down_seconds = int(self.watchdog_down_seconds.value())
         self._sm.save()
 
 
@@ -1244,6 +1528,7 @@ class PipWindow(QWidget):
         super().__init__()
         self.tile = tile
         self.main_window = main_window
+        self.should_reattach = True
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setWindowTitle(f"PiP  {tile.title}")
 
@@ -1255,10 +1540,12 @@ class PipWindow(QWidget):
         self.show()
 
     def closeEvent(self, event):
-        self.tile.set_is_pip(False)
-        self.layout().removeWidget(self.tile)
-        self.tile.setParent(None)
-        self.main_window.reattach_tile(self.tile)
+        if self.tile is not None:
+            self.tile.set_is_pip(False)
+            self.layout().removeWidget(self.tile)
+            self.tile.setParent(None)
+            if self.should_reattach and self.tile in self.main_window.video_widgets:
+                self.main_window.reattach_tile(self.tile)
         super().closeEvent(event)
 
 
@@ -1295,6 +1582,7 @@ class NewsBoard(QMainWindow):
 
         self.video_widgets: list[QtTile] = []
         self.currently_unmuted: Optional[QtTile] = None
+        self.focused_tile: Optional[QtTile] = None
         self.active_volume: int = int(self.settings.volume_default)
         self.allow_auto_select: bool = True
         self._audio_enforce_generation = 0
@@ -1302,6 +1590,14 @@ class NewsBoard(QMainWindow):
         self.main_toolbar: Optional[QToolBar] = None
         self._is_clearing = False
         self.url_action: Optional[QWidgetAction] = None
+        self.scenes: Dict[str, Dict[str, Any]] = {}
+        self.last_watchdog_alert: Dict[str, datetime] = {}
+        self.scene_combo: Optional[QComboBox] = None
+
+        self.watchdog_timer = QTimer(self)
+        self.watchdog_timer.setInterval(2000)
+        self.watchdog_timer.timeout.connect(self._run_watchdog)
+        self.watchdog_timer.start()
 
         self.list_manager = ListManager(self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.list_manager)
@@ -1321,6 +1617,10 @@ class NewsBoard(QMainWindow):
         self.list_manager.view_playlist_channels_button.clicked.connect(self.view_playlist_channels)
         self.list_manager.remove_playlist_button.clicked.connect(self.remove_playlist)
         self.list_manager.remove_all_playlists_button.clicked.connect(self.remove_all_playlists)
+        self.list_manager.play_scene_button.clicked.connect(self.play_selected_scene_from_list)
+        self.list_manager.delete_scene_button.clicked.connect(self.delete_selected_scene_from_list)
+        self.list_manager.scenes_list_widget.itemDoubleClicked.connect(
+            lambda _item: self.play_selected_scene_from_list())
         self.list_manager.visibilityChanged.connect(self.on_list_manager_visibility_changed)
 
         self._build_top_toolbar()
@@ -1331,7 +1631,7 @@ class NewsBoard(QMainWindow):
         self._queue_timer.setInterval(120)
         self._queue_timer.timeout.connect(self._process_queue)
 
-        self.news_feeds: Dict[str, str] = {}
+        self.news_feeds: Dict[str, Dict[str, Any]] = {}
         self.playlists: Dict[str, str] = {}
         self.load_news_feeds()
         self.load_playlists()
@@ -1360,11 +1660,13 @@ class NewsBoard(QMainWindow):
             self.sm.save()
 
         self.central_widget_container.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._apply_ui_density()
 
     def refresh_ui(self):
         self.sm.load()
         self.settings = self.sm.settings
         self.apply_theme()
+        self._apply_ui_density()
         self.load_news_feeds()
         self.load_playlists()
         self.remove_all_videos()
@@ -1406,6 +1708,17 @@ class NewsBoard(QMainWindow):
             app.setPalette(QApplication.style().standardPalette())
             app.setStyleSheet("")
 
+    def _apply_ui_density(self):
+        scale = max(80, min(160, int(self.settings.ui_scale_percent)))
+        compact = bool(self.settings.compact_ui)
+        base_icon = self.style().pixelMetric(QStyle.PixelMetric.PM_SmallIconSize) or 16
+        icon_size = max(14, int(base_icon * (scale / 100.0)))
+        spacing = 2 if compact else 4
+        if self.main_toolbar:
+            self.main_toolbar.setIconSize(QSize(icon_size, icon_size))
+            self.main_toolbar.setStyleSheet(f"QToolBar {{ spacing: {spacing}px; }}")
+        self.grid_layout.setSpacing(spacing)
+
     def _build_menus(self):
         mb = self.menuBar()
 
@@ -1444,6 +1757,19 @@ class NewsBoard(QMainWindow):
         file_menu.addAction(act_quit)
 
         tools = mb.addMenu(tr("Menu", "Tools"))
+        act_command = QAction(tr("Menu", "Command Palette"), self)
+        act_command.setShortcut(QKeySequence("Ctrl+K"))
+        act_command.triggered.connect(self.open_command_palette)
+        tools.addAction(act_command)
+
+        act_save_scene = QAction(tr("Menu", "Save Scene"), self)
+        act_save_scene.triggered.connect(self.save_scene_prompt)
+        tools.addAction(act_save_scene)
+
+        act_delete_scene = QAction(tr("Menu", "Delete Scene"), self)
+        act_delete_scene.triggered.connect(self.delete_scene_prompt)
+        tools.addAction(act_delete_scene)
+
         act_diag = QAction(tr("Menu", "Diagnostics"), self)
         act_diag.triggered.connect(self.open_diagnostics)
         tools.addAction(act_diag)
@@ -1527,11 +1853,21 @@ class NewsBoard(QMainWindow):
         tb.addWidget(self.next_audio_button)
 
         self.layout_combo = QComboBox()
-        self.layout_combo.addItems(["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"])
+        self.layout_combo.addItems(LAYOUT_MODES)
         self.layout_combo.setToolTip(tr("UI", "Grid layout"))
         self.layout_combo.setCurrentText(self.settings.layout_mode)
         self.layout_combo.currentTextChanged.connect(self.on_layout_mode_changed)
         tb.addWidget(self.layout_combo)
+
+        self.scene_combo = QComboBox()
+        self.scene_combo.setMinimumWidth(160)
+        self.scene_combo.setToolTip(tr("UI", "Saved scenes"))
+        self.scene_combo.currentTextChanged.connect(self.apply_scene_by_name)
+        tb.addWidget(self.scene_combo)
+
+        self.save_scene_button = QPushButton(tr("UI", "Save Scene"))
+        self.save_scene_button.clicked.connect(self.save_scene_prompt)
+        tb.addWidget(self.save_scene_button)
 
         spacer2 = QWidget()
         spacer2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1573,10 +1909,163 @@ class NewsBoard(QMainWindow):
         self.shortcut_fullscreen.triggered.connect(self.toggle_first_fullscreen)
         self.addAction(self.shortcut_fullscreen)
 
+        self.shortcut_command_palette = QAction(self)
+        self.shortcut_command_palette.setShortcut(QKeySequence("Ctrl+K"))
+        self.shortcut_command_palette.triggered.connect(self.open_command_palette)
+        self.addAction(self.shortcut_command_palette)
+
+        for idx, mode in enumerate(LAYOUT_MODES, start=1):
+            action = QAction(self)
+            action.setShortcut(QKeySequence(f"Ctrl+{idx}"))
+            action.triggered.connect(lambda _checked=False, m=mode: self.set_layout_mode(m))
+            self.addAction(action)
+
+        self.shortcut_move_left = QAction(self)
+        self.shortcut_move_left.setShortcut(QKeySequence("Alt+Left"))
+        self.shortcut_move_left.triggered.connect(lambda: self.move_focused_tile(-1))
+        self.addAction(self.shortcut_move_left)
+
+        self.shortcut_move_right = QAction(self)
+        self.shortcut_move_right.setShortcut(QKeySequence("Alt+Right"))
+        self.shortcut_move_right.triggered.connect(lambda: self.move_focused_tile(1))
+        self.addAction(self.shortcut_move_right)
+
     def on_layout_mode_changed(self, mode: str):
         self.settings.layout_mode = mode
         self.sm.save()
         self.update_grid()
+
+    def set_layout_mode(self, mode: str):
+        if mode not in LAYOUT_MODES:
+            return
+        self.layout_combo.setCurrentText(mode)
+
+    def move_focused_tile(self, delta: int):
+        if self.focused_tile not in self.video_widgets:
+            return
+        idx = self.video_widgets.index(self.focused_tile)
+        new_idx = max(0, min(len(self.video_widgets) - 1, idx + delta))
+        if new_idx == idx:
+            return
+        self.video_widgets[idx], self.video_widgets[new_idx] = self.video_widgets[new_idx], self.video_widgets[idx]
+        self.update_grid()
+
+    def _scene_payload(self) -> Dict[str, Any]:
+        return {
+            "layout_mode": self.settings.layout_mode,
+            "audio_policy": self.settings.audio_policy,
+            "active_volume": int(self.active_volume),
+            "videos": [(w.url, w.title, w.feed_profile) for w in self.video_widgets],
+        }
+
+    def _refresh_scene_combo(self):
+        if self.scene_combo:
+            current = self.scene_combo.currentText()
+            self.scene_combo.blockSignals(True)
+            self.scene_combo.clear()
+            self.scene_combo.addItem("")
+            for name in sorted(self.scenes.keys()):
+                self.scene_combo.addItem(name)
+            if current in self.scenes:
+                self.scene_combo.setCurrentText(current)
+            self.scene_combo.blockSignals(False)
+        self._refresh_scene_list_widget()
+
+    def _refresh_scene_list_widget(self):
+        if not hasattr(self.list_manager, "scenes_list_widget"):
+            return
+        selected_name = ""
+        selected = self.list_manager.scenes_list_widget.selectedItems()
+        if selected:
+            selected_name = selected[0].text()
+        self.list_manager.scenes_list_widget.clear()
+        for name in sorted(self.scenes.keys()):
+            self.list_manager.scenes_list_widget.addItem(QListWidgetItem(name))
+        if selected_name:
+            matches = self.list_manager.scenes_list_widget.findItems(selected_name, Qt.MatchFlag.MatchExactly)
+            if matches:
+                self.list_manager.scenes_list_widget.setCurrentItem(matches[0])
+
+    def save_scene_prompt(self):
+        name, ok = QInputDialog.getText(self, tr("UI", "Save scene"), tr("UI", "Scene name"))
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        self.scenes[name] = self._scene_payload()
+        self._refresh_scene_combo()
+        self.scene_combo.setCurrentText(name)
+        matches = self.list_manager.scenes_list_widget.findItems(name, Qt.MatchFlag.MatchExactly)
+        if matches:
+            self.list_manager.scenes_list_widget.setCurrentItem(matches[0])
+        self.status_label.setText(tr("UI", f"Saved scene: {name}"))
+
+    def delete_scene_prompt(self):
+        if not self.scenes:
+            return
+        name = self.scene_combo.currentText().strip() if self.scene_combo else ""
+        if not name:
+            name, ok = QInputDialog.getText(self, tr("UI", "Delete scene"), tr("UI", "Scene name"))
+            if not ok:
+                return
+            name = name.strip()
+        if not name:
+            return
+        if name in self.scenes:
+            self.scenes.pop(name, None)
+            self._refresh_scene_combo()
+            self.status_label.setText(tr("UI", f"Deleted scene: {name}"))
+
+    def play_selected_scene_from_list(self):
+        selected = self.list_manager.scenes_list_widget.selectedItems()
+        if not selected:
+            return
+        name = selected[0].text().strip()
+        if name:
+            self.apply_scene_by_name(name)
+
+    def delete_selected_scene_from_list(self):
+        selected = self.list_manager.scenes_list_widget.selectedItems()
+        if not selected:
+            return
+        name = selected[0].text().strip()
+        if not name:
+            return
+        self.scenes.pop(name, None)
+        self._refresh_scene_combo()
+        self.status_label.setText(tr("UI", f"Deleted scene: {name}"))
+
+    def apply_scene_by_name(self, name: str):
+        name = name.strip()
+        if not name or name not in self.scenes:
+            return
+        scene = self.scenes[name]
+        self.settings.layout_mode = scene.get("layout_mode", self.settings.layout_mode)
+        self.layout_combo.setCurrentText(self.settings.layout_mode)
+        self.settings.audio_policy = scene.get("audio_policy", self.settings.audio_policy)
+        self.active_volume = int(scene.get("active_volume", self.active_volume))
+        self.volume_slider.setValue(self.active_volume)
+
+        self._is_clearing = True
+        for w in self.video_widgets[:]:
+            try:
+                w.stop()
+            except Exception:
+                pass
+            w.setParent(None)
+            w.deleteLater()
+        self.video_widgets.clear()
+        self._is_clearing = False
+        for item in scene.get("videos", []):
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                url = item[0]
+                title = item[1]
+                profile = item[2] if len(item) > 2 else None
+                self.create_video_widget(url, title, profile)
+        self.update_grid()
+        self._enforce_audio_policy_with_retries()
+        self.status_label.setText(tr("UI", f"Loaded scene: {name}"))
 
     def on_list_manager_visibility_changed(self, visible: bool):
         if self.settings.show_list_manager != visible:
@@ -1622,26 +2111,30 @@ class NewsBoard(QMainWindow):
         feeds_file, _, _, _ = default_files()
         feeds_file.parent.mkdir(parents=True, exist_ok=True)
         try:
-            feeds = json.loads(feeds_file.read_text(encoding="utf-8"))
+            raw_feeds = json.loads(feeds_file.read_text(encoding="utf-8"))
         except Exception:
-            feeds = {
-                "Associated Press": "https://www.youtube.com/channel/UC52X5wxOL_s5ywGvmcU7v8g",
-                "Reuters": "https://www.youtube.com/channel/UChqUTb7kYRx8-EiaN3XFrSQ",
-                "CNN": "https://www.youtube.com/@CNN",
+            raw_feeds = {
+                "Associated Press": default_feed_profile("https://www.youtube.com/channel/UC52X5wxOL_s5ywGvmcU7v8g"),
+                "Reuters": default_feed_profile("https://www.youtube.com/channel/UChqUTb7kYRx8-EiaN3XFrSQ"),
+                "CNN": default_feed_profile("https://www.youtube.com/@CNN"),
             }
             try:
-                feeds_file.write_text(json.dumps(feeds, indent=4), encoding="utf-8")
+                feeds_file.write_text(json.dumps(raw_feeds, indent=4), encoding="utf-8")
             except Exception:
                 pass
+        feeds: Dict[str, Dict[str, Any]] = {}
+        if isinstance(raw_feeds, dict):
+            for name, record in raw_feeds.items():
+                feeds[str(name)] = normalize_feed_record(record)
         self.news_feeds = feeds
         self._refresh_feeds_list()
 
     def _refresh_feeds_list(self):
         w = self.list_manager.news_feed_list_widget
         w.clear()
-        for name, url in self.news_feeds.items():
+        for name, record in self.news_feeds.items():
             item = QListWidgetItem(name)
-            item.setData(Qt.ItemDataRole.UserRole, url)
+            item.setData(Qt.ItemDataRole.UserRole, normalize_feed_record(record))
             w.addItem(item)
 
     def save_news_feeds(self):
@@ -1667,21 +2160,25 @@ class NewsBoard(QMainWindow):
             return
         for item in selected:
             feed_name = item.text()
-            feed_url = item.data(Qt.ItemDataRole.UserRole)
-            self._enqueue(feed_url, feed_name)
+            feed_record = normalize_feed_record(item.data(Qt.ItemDataRole.UserRole))
+            feed_url = feed_record.get("url", "").strip()
+            if feed_url:
+                self._enqueue(feed_url, feed_name, feed_record)
 
     def add_all_feeds(self):
-        for name, url in self.news_feeds.items():
-            self._enqueue(url, name)
+        for name, record in self.news_feeds.items():
+            feed_record = normalize_feed_record(record)
+            if feed_record.get("url", "").strip():
+                self._enqueue(feed_record["url"], name, feed_record)
 
     def add_new_feed(self):
-        dialog = FeedDialog(self)
+        dialog = FeedDialog(self, show_profile=True)
         if dialog.exec():
-            name, url = dialog.get_feed_data()
+            name, _url = dialog.get_feed_data()
             name = name.strip()
-            url = url.strip()
-            if name and url:
-                self.news_feeds[name] = url
+            profile = normalize_feed_record(dialog.get_profile_data())
+            if name and profile["url"]:
+                self.news_feeds[name] = profile
                 self.save_news_feeds()
                 self._refresh_feeds_list()
 
@@ -1691,15 +2188,15 @@ class NewsBoard(QMainWindow):
             return
         item = selected[0]
         old_name = item.text()
-        old_url = item.data(Qt.ItemDataRole.UserRole)
-        dialog = FeedDialog(self, name=old_name, url=old_url)
+        old_record = normalize_feed_record(item.data(Qt.ItemDataRole.UserRole))
+        dialog = FeedDialog(self, name=old_name, url=old_record.get("url", ""), profile=old_record, show_profile=True)
         if dialog.exec():
-            new_name, new_url = dialog.get_feed_data()
+            new_name, _new_url = dialog.get_feed_data()
             new_name = new_name.strip()
-            new_url = new_url.strip()
-            if new_name and new_url:
+            new_record = normalize_feed_record(dialog.get_profile_data())
+            if new_name and new_record["url"]:
                 self.news_feeds.pop(old_name, None)
-                self.news_feeds[new_name] = new_url
+                self.news_feeds[new_name] = new_record
                 self.save_news_feeds()
                 self._refresh_feeds_list()
 
@@ -1767,7 +2264,7 @@ class NewsBoard(QMainWindow):
             pass
 
     def add_playlist_url(self):
-        dialog = FeedDialog(self, name="", url="")
+        dialog = FeedDialog(self, name="", url="", show_profile=False)
         dialog.setWindowTitle(tr("Playlist", "Add Playlist URL"))
         dialog.set_name_label(tr("Playlist", "Name"))
         if dialog.exec():
@@ -1886,8 +2383,8 @@ class NewsBoard(QMainWindow):
         self.save_playlists()
         self._refresh_playlists_list()
 
-    def _enqueue(self, url, title):
-        self._queue.append((url, title))
+    def _enqueue(self, url, title, feed_profile: Optional[Dict[str, Any]] = None):
+        self._queue.append((url, title, feed_profile))
         if not self._queue_timer.isActive():
             self._queue_timer.start()
 
@@ -1895,12 +2392,15 @@ class NewsBoard(QMainWindow):
         if not self._queue:
             self._queue_timer.stop()
             return
-        url, title = self._queue.popleft()
-        self.create_video_widget(url, title)
+        url, title, feed_profile = self._queue.popleft()
+        self.create_video_widget(url, title, feed_profile)
 
-    def create_video_widget(self, url, title):
+    def create_video_widget(self, url, title, feed_profile: Optional[Dict[str, Any]] = None):
         is_first_video = not bool(self.video_widgets)
-        vw = QtTile(url, title, self.settings, parent=self.central_widget_container, muted=not is_first_video)
+        profile = normalize_feed_record(feed_profile or {"url": url})
+        default_muted = bool(profile.get("start_muted", True))
+        muted = default_muted if not is_first_video else False
+        vw = QtTile(url, title, self.settings, parent=self.central_widget_container, muted=muted, feed_profile=profile)
         vw.requestToggle.connect(self.toggle_mute_single)
         vw.started.connect(self.on_tile_playing)
         vw.requestFullscreen.connect(self.toggle_fullscreen_tile)
@@ -1908,12 +2408,16 @@ class NewsBoard(QMainWindow):
         vw.requestRemove.connect(self.remove_video_widget)
         vw.requestActive.connect(self.activate_tile_audio)
         vw.titleChanged.connect(self.on_tile_title_changed)
+        vw.healthChanged.connect(self.on_tile_health_changed)
 
         self.video_widgets.append(vw)
 
         if is_first_video:
             self.currently_unmuted = vw
             self.allow_auto_select = True
+            self.focused_tile = vw
+        elif not muted and self.settings.audio_policy == "single":
+            self.currently_unmuted = vw
 
         self.update_grid()
         self._enforce_audio_policy_with_retries()
@@ -1930,12 +2434,19 @@ class NewsBoard(QMainWindow):
     def remove_video_widget(self, widget):
         if self._is_clearing:
             return
+        if widget in self.pip_windows:
+            pip_window = self.pip_windows.pop(widget)
+            pip_window.should_reattach = False
+            pip_window.close()
         if self.fullscreen_tile is widget and self.isFullScreen():
             self.exit_fullscreen()
         if widget in self.video_widgets:
             was_unmuted = widget == self.currently_unmuted
+            was_focused = widget == self.focused_tile
             if was_unmuted:
                 self.currently_unmuted = None
+            if was_focused:
+                self.focused_tile = None
 
             safe_disconnect(widget.requestToggle)
             safe_disconnect(widget.started)
@@ -1944,6 +2455,7 @@ class NewsBoard(QMainWindow):
             safe_disconnect(widget.requestRemove)
             safe_disconnect(widget.requestActive)
             safe_disconnect(widget.titleChanged)
+            safe_disconnect(widget.healthChanged)
 
             try:
                 widget.stop()
@@ -1958,6 +2470,8 @@ class NewsBoard(QMainWindow):
             if was_unmuted and self.video_widgets:
                 self.currently_unmuted = self.video_widgets[0]
                 self.allow_auto_select = True
+            if was_focused and self.video_widgets:
+                self.focused_tile = self.video_widgets[0]
             self.update_grid()
             self._enforce_audio_policy_with_retries()
 
@@ -1987,6 +2501,12 @@ class NewsBoard(QMainWindow):
         self._queue.clear()
 
         self.currently_unmuted = None
+        self.focused_tile = None
+
+        for tile, pip_window in list(self.pip_windows.items()):
+            pip_window.should_reattach = False
+            pip_window.close()
+        self.pip_windows.clear()
 
         for w in self.video_widgets[:]:
             safe_disconnect(w.requestToggle)
@@ -1996,6 +2516,7 @@ class NewsBoard(QMainWindow):
             safe_disconnect(w.requestRemove)
             safe_disconnect(w.requestActive)
             safe_disconnect(w.titleChanged)
+            safe_disconnect(w.healthChanged)
             try:
                 w.stop()
             except Exception:
@@ -2063,6 +2584,7 @@ class NewsBoard(QMainWindow):
             row = i // cols
             col = i % cols
             self.grid_layout.addWidget(w, row, col)
+            w.set_overlay_visibility(self.settings.show_operational_overlays)
             w.show()
 
         self.list_manager.grid_list_widget.clear()
@@ -2090,7 +2612,18 @@ class NewsBoard(QMainWindow):
     def activate_tile_audio(self, video_widget: QtTile):
         if self._is_clearing:
             return
-        
+        self.focused_tile = video_widget
+        pref_vol = int(video_widget.feed_profile.get("preferred_volume", self.active_volume))
+        self.active_volume = max(0, min(100, pref_vol))
+        self.volume_slider.blockSignals(True)
+        self.volume_slider.setValue(self.active_volume)
+        self.volume_label.setText(tr("UI", f"Volume {self.active_volume}"))
+        self.volume_slider.blockSignals(False)
+
+        if not self.settings.audio_follow_selection:
+            self._update_active_tile_styles()
+            return
+
         if self.settings.audio_policy == "mixed":
             if video_widget.is_muted:
                 video_widget.set_mute_state(False)
@@ -2112,11 +2645,69 @@ class NewsBoard(QMainWindow):
         if self.sender() == self.currently_unmuted:
             self.status_label.setText(tr("UI", f"Active: {new_title}"))
 
+    def on_tile_health_changed(self, tile: QtTile):
+        if tile.health_state == "error":
+            self.logger.warning("Tile error: %s (%s)", tile.title, tile.last_error)
+        tile.set_overlay_visibility(self.settings.show_operational_overlays)
+
+    def _run_watchdog(self):
+        if not self.settings.watchdog_enabled:
+            return
+        now = datetime.now()
+        threshold = max(5, int(self.settings.watchdog_down_seconds))
+        for tile in self.video_widgets:
+            if tile.down_since is None:
+                continue
+            down_for = int((now - tile.down_since).total_seconds())
+            if down_for < threshold:
+                continue
+            key = tile.title
+            last = self.last_watchdog_alert.get(key)
+            if last and (now - last).total_seconds() < threshold:
+                continue
+            self.last_watchdog_alert[key] = now
+            msg = tr("UI", f"Watchdog: {tile.title} down for {down_for}s")
+            self.status_label.setText(msg)
+            self.logger.warning(msg)
+
     def _update_active_tile_styles(self):
         for tile in self.video_widgets:
             tile._apply_tile_styles()
             if tile is self.currently_unmuted and self.settings.audio_policy == "single":
                 tile.setStyleSheet(tile.styleSheet() + "QGraphicsView#tile { border: 3px solid #2a82da; }")
+            elif tile is self.focused_tile:
+                tile.setStyleSheet(tile.styleSheet() + "QGraphicsView#tile { border: 2px solid #6ea9db; }")
+
+    def _fade_tile_volume(self, tile: QtTile, target_percent: int):
+        duration = int(self.settings.audio_fade_ms)
+        target = max(0.0, min(1.0, float(target_percent) / 100.0))
+        if duration <= 0:
+            try:
+                tile.audio.setVolume(target)
+            except Exception:
+                pass
+            return
+        start = tile.audio.volume()
+        steps = 6
+        interval = max(16, int(duration / steps))
+        for i in range(1, steps + 1):
+            ratio = i / float(steps)
+            vol = start + ((target - start) * ratio)
+            QTimer.singleShot(interval * i, lambda v=vol, t=tile: self._safe_set_tile_volume(t, v))
+
+    @staticmethod
+    def _safe_set_tile_volume(tile: QtTile, value: float):
+        try:
+            tile.audio.setVolume(value)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _safe_hard_mute(tile: QtTile):
+        try:
+            tile.hard_mute()
+        except Exception:
+            pass
 
     def _enforce_audio_policy(self, generation: int):
         if generation != self._audio_enforce_generation:
@@ -2128,9 +2719,12 @@ class NewsBoard(QMainWindow):
         active = self.currently_unmuted
         for tile in self.video_widgets:
             if tile is not active:
-                tile.set_mute_state(True)
+                tile.audio.setMuted(False)
+                self._fade_tile_volume(tile, 0)
+                QTimer.singleShot(max(40, int(self.settings.audio_fade_ms)), lambda t=tile: self._safe_hard_mute(t))
         if active:
             active.make_active(self.active_volume)
+            self._fade_tile_volume(active, self.active_volume)
             self.status_label.setText(tr("UI", f"Active: {active.title}"))
         else:
             self.status_label.setText(tr("UI", "No active audio"))
@@ -2224,6 +2818,16 @@ class NewsBoard(QMainWindow):
 
         if self.main_toolbar:
             self.main_toolbar.show()
+        if hasattr(self, "manage_lists_button"):
+            self.manage_lists_button.show()
+        if self.url_action:
+            self.url_action.setVisible(True)
+        if hasattr(self, "add_video_button"):
+            self.add_video_button.show()
+        if hasattr(self, "volume_label"):
+            self.volume_label.show()
+        if hasattr(self, "volume_slider"):
+            self.volume_slider.show()
 
         for w in self.video_widgets:
             w.show()
@@ -2295,10 +2899,12 @@ class NewsBoard(QMainWindow):
         _, _, state_file, _ = default_files()
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state = {
-            "videos": [(w.url, w.title) for w in self.video_widgets],
+            "videos": [(w.url, w.title, w.feed_profile) for w in self.video_widgets],
             "active_volume": int(self.active_volume),
             "geometry": self.saveGeometry().toBase64().data().decode("utf-8"),
             "is_maximized": self.isMaximized(),
+            "scenes": self.scenes,
+            "focused_title": self.focused_tile.title if self.focused_tile else "",
         }
         try:
             state_file.write_text(json.dumps(state, indent=4), encoding="utf-8")
@@ -2307,6 +2913,7 @@ class NewsBoard(QMainWindow):
 
     def load_state(self):
         _, _, state_file, _ = default_files()
+        self._refresh_scene_combo()
         if not state_file.exists():
             self.showMaximized()
             return
@@ -2324,8 +2931,16 @@ class NewsBoard(QMainWindow):
             else:
                 self.showNormal()
 
-            for url, title in state.get("videos", []):
-                self._enqueue(url, title)
+            raw_scenes = state.get("scenes", {})
+            self.scenes = raw_scenes if isinstance(raw_scenes, dict) else {}
+            self._refresh_scene_combo()
+
+            for rec in state.get("videos", []):
+                if isinstance(rec, (list, tuple)) and len(rec) >= 2:
+                    url = rec[0]
+                    title = rec[1]
+                    feed_profile = rec[2] if len(rec) > 2 else None
+                    self._enqueue(url, title, feed_profile)
         except Exception:
             self.showMaximized()
 
@@ -2343,6 +2958,78 @@ class NewsBoard(QMainWindow):
         self.save_state()
         super().closeEvent(event)
 
+    def _palette_actions(self) -> list[Tuple[str, Any]]:
+        actions: list[Tuple[str, Any]] = [
+            (tr("UI", "Add video from URL"), self.add_video_from_input),
+            (tr("UI", "Add all feeds"), self.add_all_feeds),
+            (tr("UI", "Mute all tiles"), self.mute_all_tiles),
+            (tr("UI", "Next active audio"), self.cycle_active_audio),
+            (tr("UI", "Reload all videos"), self.reload_all_videos),
+            (tr("UI", "Toggle fullscreen"), self.toggle_grid_fullscreen),
+            (tr("UI", "Open settings"), self.open_settings),
+            (tr("UI", "Open diagnostics"), self.open_diagnostics),
+            (tr("UI", "Save scene"), self.save_scene_prompt),
+        ]
+        for feed_name in self.news_feeds.keys():
+            actions.append((f"{tr('UI', 'Add feed')}: {feed_name}", lambda n=feed_name: self._add_named_feed(n)))
+        for scene_name in self.scenes.keys():
+            actions.append(
+                (f"{tr('UI', 'Load scene')}: {scene_name}", lambda n=scene_name: self.apply_scene_by_name(n)))
+        return actions
+
+    def _add_named_feed(self, feed_name: str):
+        rec = self.news_feeds.get(feed_name)
+        if not rec:
+            return
+        profile = normalize_feed_record(rec)
+        if profile["url"]:
+            self._enqueue(profile["url"], feed_name, profile)
+
+    def open_command_palette(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("UI", "Command Palette"))
+        dlg.setMinimumSize(520, 420)
+        lay = QVBoxLayout(dlg)
+        search = QLineEdit()
+        search.setPlaceholderText(tr("UI", "Type a command, feed, or scene"))
+        items = QListWidget()
+        lay.addWidget(search)
+        lay.addWidget(items)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        lay.addWidget(buttons)
+
+        all_actions = self._palette_actions()
+
+        def refill(text: str):
+            q = text.lower().strip()
+            items.clear()
+            for label, cb in all_actions:
+                if q and q not in label.lower():
+                    continue
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, cb)
+                items.addItem(item)
+            if items.count() > 0:
+                items.setCurrentRow(0)
+
+        def execute_selected():
+            item = items.currentItem()
+            if not item:
+                return
+            cb = item.data(Qt.ItemDataRole.UserRole)
+            if callable(cb):
+                cb()
+            dlg.accept()
+
+        search.textChanged.connect(refill)
+        search.returnPressed.connect(execute_selected)
+        items.itemDoubleClicked.connect(lambda _item: execute_selected())
+        buttons.rejected.connect(dlg.reject)
+        buttons.accepted.connect(dlg.accept)
+        refill("")
+        search.setFocus()
+        dlg.exec()
+
     def open_settings(self):
         dlg = SettingsDialog(self, self.sm)
         result = dlg.exec()
@@ -2354,7 +3041,11 @@ class NewsBoard(QMainWindow):
             dlg.apply()
             self.settings = self.sm.settings
             self.apply_theme()
+            self._apply_ui_density()
             self.list_manager.setVisible(self.settings.show_list_manager)
+            for tile in self.video_widgets:
+                tile._settings = self.settings
+                tile.set_overlay_visibility(self.settings.show_operational_overlays)
             QMessageBox.information(self, APP_NAME, tr("Settings", "Settings saved"))
 
     def open_diagnostics(self):
@@ -2372,6 +3063,15 @@ class NewsBoard(QMainWindow):
             + "\n"
             + "Delete: "
             + tr("Help", "Remove selected from grid list")
+            + "\n"
+            + "Ctrl+K: "
+            + tr("Help", "Open command palette")
+            + "\n"
+            + "Alt+Left/Alt+Right: "
+            + tr("Help", "Move focused tile in grid order")
+            + "\n"
+            + "Ctrl+1..Ctrl+6: "
+            + tr("Help", "Switch layout presets")
             + "\n"
         )
         dlg = QDialog(self)
