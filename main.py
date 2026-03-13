@@ -559,10 +559,12 @@ class QtTile(QGraphicsView):
 
         # Overlay Widget
         self.overlay_widget = QWidget()
+        self.overlay_widget.setObjectName("tileOverlay")
         self.overlay_widget.setStyleSheet("background: transparent;")
 
         # Status Overlay
         self.status_overlay = QLabel(self.overlay_widget)
+        self.status_overlay.setObjectName("tileStatusOverlay")
         self.status_overlay.setStyleSheet(
             "background-color: rgba(0, 0, 0, 160); color: white; padding: 4px; font-weight: bold;"
         )
@@ -570,12 +572,14 @@ class QtTile(QGraphicsView):
         self.status_overlay.hide()
 
         self.health_badge = QLabel(self.overlay_widget)
+        self.health_badge.setObjectName("tileHealthBadge")
         self.health_badge.setStyleSheet(
             "background-color: rgba(0, 0, 0, 160); color: white; padding: 3px 6px; border-radius: 4px; font-weight: bold;"
         )
         self.health_badge.show()
 
         self.ops_overlay = QLabel(self.overlay_widget)
+        self.ops_overlay.setObjectName("tileOpsOverlay")
         self.ops_overlay.setStyleSheet(
             "background-color: rgba(0, 0, 0, 140); color: #e8edf2; padding: 3px 6px; border-radius: 4px;"
         )
@@ -585,6 +589,7 @@ class QtTile(QGraphicsView):
 
         # Mute Button (Top Right)
         self.overlay_mute_button = QPushButton(self.overlay_widget)
+        self.overlay_mute_button.setObjectName("tileOverlayButton")
         self.overlay_mute_button.setFixedSize(28, 28)
         self.overlay_mute_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.overlay_mute_button.setStyleSheet(
@@ -606,31 +611,37 @@ class QtTile(QGraphicsView):
         self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         self.play_button = QPushButton("", self.controls)
+        self.play_button.setObjectName("tileIconButton")
         self.play_button.setAccessibleName(tr("Tile", "Play or pause"))
         self.play_button.setFixedSize(24, 24)
         self.play_button.setIconSize(QSize(16, 16))
 
         self.mute_button = QPushButton("", self.controls)
+        self.mute_button.setObjectName("tileIconButton")
         self.mute_button.setAccessibleName(tr("Tile", "Mute"))
         self.mute_button.setFixedSize(24, 24)
         self.mute_button.setIconSize(QSize(16, 16))
 
         self.reload_button = QPushButton("", self.controls)
+        self.reload_button.setObjectName("tileIconButton")
         self.reload_button.setAccessibleName(tr("Tile", "Reload"))
         self.reload_button.setFixedSize(24, 24)
         self.reload_button.setIconSize(QSize(16, 16))
 
         self.pip_button = QPushButton("", self.controls)
+        self.pip_button.setObjectName("tileIconButton")
         self.pip_button.setAccessibleName(tr("Tile", "Picture-in-Picture"))
         self.pip_button.setFixedSize(24, 24)
         self.pip_button.setIconSize(QSize(16, 16))
 
         self.fullscreen_button = QPushButton("", self.controls)
+        self.fullscreen_button.setObjectName("tileIconButton")
         self.fullscreen_button.setAccessibleName(tr("Tile", "Fullscreen"))
         self.fullscreen_button.setFixedSize(24, 24)
         self.fullscreen_button.setIconSize(QSize(16, 16))
 
         self.remove_button = QPushButton("", self.controls)
+        self.remove_button.setObjectName("tileIconButton")
         self.remove_button.setAccessibleName(tr("Tile", "Remove"))
         self.remove_button.setFixedSize(24, 24)
         self.remove_button.setIconSize(QSize(16, 16))
@@ -677,19 +688,33 @@ class QtTile(QGraphicsView):
 
     def _apply_tile_styles(self):
         active_audio, focused = self._highlight_state
-        border = "border: none;"
+        border = "border: 1px solid rgba(255, 255, 255, 0.08);"
+        shadow = "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(28, 31, 37, 255), stop:1 rgba(16, 18, 22, 255));"
         if active_audio:
-            border = "border: 3px solid #2a82da;"
+            border = "border: 3px solid #2f8cff;"
         elif focused:
-            border = "border: 2px solid #6ea9db;"
+            border = "border: 2px solid rgba(158, 198, 255, 0.95);"
         elif self._drop_hover:
             border = "border: 2px dashed #f0c75e;"
         self.setStyleSheet(
             f"""
-            QGraphicsView#tile {{ border-radius: 10px; background: rgba(20, 20, 20, 255); {border} }}
-            QWidget#controls {{ background: rgba(0, 0, 0, 140); }}
-            QLabel {{ padding-left: 6px; color: white; }}
-            QWidget#controls QPushButton {{ border: none; padding: 0px; margin: 0px; background: transparent; }}
+            QGraphicsView#tile {{ border-radius: 14px; {shadow} {border} }}
+            QWidget#controls {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(10, 12, 16, 120),
+                    stop:1 rgba(10, 12, 16, 210));
+                border-top: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+            QLabel {{ padding-left: 8px; color: white; }}
+            QWidget#controls QPushButton#tileIconButton {{
+                border: none;
+                padding: 0px;
+                margin: 0px;
+                background: transparent;
+                border-radius: 8px;
+            }}
+            QWidget#controls QPushButton#tileIconButton:hover {{ background: rgba(255, 255, 255, 0.10); }}
+            QPushButton#tileOverlayButton:hover {{ background-color: rgba(255, 255, 255, 0.16); }}
             """
         )
 
@@ -1254,6 +1279,7 @@ class ListManager(QDockWidget):
         self.setObjectName("listManager")
 
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("listTabs")
         self.setWidget(self.tabs)
 
         style = self.style()
@@ -1269,6 +1295,7 @@ class ListManager(QDockWidget):
         self.news_feed_layout.addWidget(self.feed_search)
 
         self.toolbar = QWidget()
+        self.toolbar.setObjectName("listToolbar")
         self.toolbar_layout = QHBoxLayout(self.toolbar)
         self.toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.toolbar_layout.setSpacing(6)
@@ -1302,6 +1329,7 @@ class ListManager(QDockWidget):
         self.toolbar_layout.addWidget(self.remove_all_feeds_button)
 
         self.news_feed_list_widget = QListWidget()
+        self.news_feed_list_widget.setObjectName("feedList")
         self.news_feed_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.news_feed_list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.news_feed_list_widget.setDragEnabled(True)
@@ -1328,6 +1356,7 @@ class ListManager(QDockWidget):
         self.playlists_layout.addWidget(self.playlist_search)
 
         self.playlists_toolbar = QWidget()
+        self.playlists_toolbar.setObjectName("listToolbar")
         self.playlists_toolbar_layout = QHBoxLayout(self.playlists_toolbar)
         self.playlists_toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.playlists_toolbar_layout.setSpacing(6)
@@ -1355,6 +1384,7 @@ class ListManager(QDockWidget):
         self.playlists_toolbar_layout.addWidget(self.remove_all_playlists_button)
 
         self.playlists_list_widget = QListWidget()
+        self.playlists_list_widget.setObjectName("playlistList")
         self.playlists_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.playlists_list_widget.setAccessibleName(tr("List", "Playlists"))
 
@@ -1368,6 +1398,7 @@ class ListManager(QDockWidget):
         self.grid_layout.setSpacing(6)
 
         self.grid_toolbar = QWidget()
+        self.grid_toolbar.setObjectName("listToolbar")
         self.grid_toolbar_layout = QHBoxLayout(self.grid_toolbar)
         self.grid_toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.grid_toolbar_layout.setSpacing(6)
@@ -1378,6 +1409,7 @@ class ListManager(QDockWidget):
         self.grid_toolbar_layout.addStretch()
 
         self.grid_list_widget = QListWidget()
+        self.grid_list_widget.setObjectName("gridList")
         self.grid_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.grid_list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.grid_list_widget.setDragEnabled(True)
@@ -1395,6 +1427,7 @@ class ListManager(QDockWidget):
         self.scenes_layout.setSpacing(6)
 
         self.scenes_toolbar = QWidget()
+        self.scenes_toolbar.setObjectName("listToolbar")
         self.scenes_toolbar_layout = QHBoxLayout(self.scenes_toolbar)
         self.scenes_toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.scenes_toolbar_layout.setSpacing(6)
@@ -1410,6 +1443,7 @@ class ListManager(QDockWidget):
         self.scenes_toolbar_layout.addStretch()
 
         self.scenes_list_widget = QListWidget()
+        self.scenes_list_widget.setObjectName("sceneList")
         self.scenes_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.scenes_list_widget.setAccessibleName(tr("List", "Scenes"))
 
@@ -1436,6 +1470,7 @@ class DiagnosticsDialog(QDialog):
     def __init__(self, parent, settings: SettingsManager):
         super().__init__(parent)
         self.setWindowTitle(tr("Diag", "Diagnostics"))
+        self.setMinimumSize(760, 520)
         lay = QVBoxLayout(self)
 
         feeds, playlists, state, log = (
@@ -1499,6 +1534,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent, sm: SettingsManager):
         super().__init__(parent)
         self.setWindowTitle(tr("Settings", "Settings"))
+        self.setMinimumWidth(540)
         self._sm = sm
         s = sm.settings
         self.profile_imported = False
@@ -1677,6 +1713,7 @@ class NewsBoard(QMainWindow):
         self.apply_theme()
 
         self.central_widget_container = QWidget()
+        self.central_widget_container.setObjectName("gridHost")
         self.central_widget_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         the_layout = QGridLayout(self.central_widget_container)
         the_layout.setContentsMargins(0, 0, 0, 0)
@@ -1684,8 +1721,18 @@ class NewsBoard(QMainWindow):
         self.grid_layout = the_layout
         self.setCentralWidget(self.central_widget_container)
 
+        self.grid_empty_state = QLabel(
+            tr("UI",
+               "No streams in the board yet.\nOpen Manage Lists or paste a stream URL above to start building a scene."),
+            self.central_widget_container,
+        )
+        self.grid_empty_state.setObjectName("gridEmptyState")
+        self.grid_empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.grid_empty_state.setWordWrap(True)
+
         self.status_bar = self.statusBar()
         self.status_label = QLabel()
+        self.status_label.setObjectName("statusLabel")
         self.status_bar.addPermanentWidget(self.status_label)
         self.status_label.setText(tr("UI", "Ready"))
 
@@ -1799,33 +1846,279 @@ class NewsBoard(QMainWindow):
             dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
             dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
             app.setPalette(dark_palette)
-            app.setStyleSheet("""
-                QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }
-                QMenu { background-color: #2b2b2b; color: #ffffff; border: 1px solid #3a3a3a; }
-                QMenu::item { background-color: transparent; padding: 4px 20px; }
-                QMenu::item:selected { background-color: #4282da; color: #ffffff; }
-                QMenuBar { background-color: #1e1e1e; color: #ffffff; }
-                QMenuBar::item { background-color: transparent; padding: 4px 10px; }
-                QMenuBar::item:selected { background-color: #3a3a3a; }
-                QLabel { color: #ffffff; }
-                QCheckBox { color: #ffffff; }
-                QComboBox { color: #ffffff; background-color: #333333; border: 1px solid #555; }
-                QComboBox::drop-down { border: none; }
-                QComboBox QAbstractItemView { color: #ffffff; background-color: #333333; selection-background-color: #4282da; }
-            """)
+            palette_name = "dark"
         else:
             app.setPalette(QApplication.style().standardPalette())
-            app.setStyleSheet("")
+            palette_name = "light"
+        app.setStyleSheet(self._build_app_stylesheet(palette_name))
+
+    def _build_app_stylesheet(self, palette_name: str) -> str:
+        if palette_name == "dark":
+            colors = {
+                "window": "#111419",
+                "panel": "#171c23",
+                "panel_alt": "#1d2430",
+                "panel_soft": "#202836",
+                "input": "#111721",
+                "border": "#2a3342",
+                "border_strong": "#3a4659",
+                "text": "#f2f5f8",
+                "text_muted": "#9aa7b8",
+                "accent": "#2f8cff",
+                "accent_soft": "#173861",
+                "danger": "#a94747",
+                "hover": "rgba(255, 255, 255, 0.06)",
+            }
+        else:
+            colors = {
+                "window": "#eef3f8",
+                "panel": "#f7f9fc",
+                "panel_alt": "#ffffff",
+                "panel_soft": "#e8eef6",
+                "input": "#ffffff",
+                "border": "#ced8e4",
+                "border_strong": "#b5c3d3",
+                "text": "#14202b",
+                "text_muted": "#5e6f82",
+                "accent": "#0d6efd",
+                "accent_soft": "#d9e8ff",
+                "danger": "#c24b4b",
+                "hover": "rgba(13, 110, 253, 0.08)",
+            }
+        return f"""
+            QToolTip {{
+                color: {colors["text"]};
+                background-color: {colors["panel_alt"]};
+                border: 1px solid {colors["border_strong"]};
+                padding: 6px 8px;
+            }}
+            QMainWindow, QWidget {{
+                color: {colors["text"]};
+            }}
+            QMainWindow {{
+                background: {colors["window"]};
+            }}
+            QWidget#gridHost {{
+                background: {colors["window"]};
+            }}
+            QLabel#gridEmptyState {{
+                color: {colors["text_muted"]};
+                font-size: 18px;
+                font-weight: 600;
+                padding: 28px;
+                border: 1px dashed {colors["border_strong"]};
+                border-radius: 18px;
+                background: {colors["panel"]};
+            }}
+            QStatusBar {{
+                background: {colors["panel"]};
+                border-top: 1px solid {colors["border"]};
+            }}
+            QLabel#statusLabel {{
+                color: {colors["text_muted"]};
+                padding: 2px 6px;
+            }}
+            QMenu {{
+                background-color: {colors["panel_alt"]};
+                color: {colors["text"]};
+                border: 1px solid {colors["border"]};
+                padding: 6px;
+            }}
+            QMenu::item {{
+                background-color: transparent;
+                padding: 7px 16px;
+                border-radius: 8px;
+            }}
+            QMenu::item:selected {{
+                background-color: {colors["hover"]};
+                color: {colors["text"]};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {colors["border"]};
+                margin: 6px 8px;
+            }}
+            QMenuBar {{
+                background-color: {colors["panel"]};
+                color: {colors["text"]};
+                border-bottom: 1px solid {colors["border"]};
+            }}
+            QMenuBar::item {{
+                background-color: transparent;
+                padding: 6px 12px;
+                margin: 2px 2px;
+                border-radius: 8px;
+            }}
+            QMenuBar::item:selected {{
+                background-color: {colors["hover"]};
+            }}
+            QToolBar {{
+                background: {colors["panel"]};
+                border: none;
+                border-bottom: 1px solid {colors["border"]};
+                padding: 10px 12px;
+                spacing: 8px;
+            }}
+            QWidget#toolbarGroup {{
+                background: {colors["panel_alt"]};
+                border: 1px solid {colors["border"]};
+                border-radius: 14px;
+            }}
+            QWidget#toolbarGroup QLabel#toolbarSectionLabel {{
+                color: {colors["text_muted"]};
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                padding-right: 6px;
+            }}
+            QLineEdit, QComboBox, QListWidget, QTextEdit {{
+                background: {colors["input"]};
+                color: {colors["text"]};
+                border: 1px solid {colors["border"]};
+                border-radius: 10px;
+                padding: 7px 10px;
+                selection-background-color: {colors["accent"]};
+                selection-color: #ffffff;
+            }}
+            QLineEdit:focus, QComboBox:focus, QListWidget:focus, QTextEdit:focus {{
+                border: 1px solid {colors["accent"]};
+            }}
+            QLineEdit#urlInput {{
+                min-width: 280px;
+                padding: 9px 12px;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 24px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {colors["panel_alt"]};
+                color: {colors["text"]};
+                border: 1px solid {colors["border"]};
+                selection-background-color: {colors["accent"]};
+                selection-color: #ffffff;
+            }}
+            QListWidget {{
+                outline: 0;
+                padding: 8px;
+            }}
+            QListWidget::item {{
+                padding: 7px 8px;
+                border-radius: 8px;
+                margin: 1px 0px;
+            }}
+            QListWidget::item:selected {{
+                background: {colors["accent_soft"]};
+                color: {colors["text"]};
+            }}
+            QListWidget::item:hover {{
+                background: {colors["hover"]};
+            }}
+            QPushButton {{
+                background: {colors["panel_soft"]};
+                color: {colors["text"]};
+                border: 1px solid {colors["border"]};
+                border-radius: 10px;
+                padding: 8px 12px;
+                min-height: 18px;
+            }}
+            QPushButton:hover {{
+                background: {colors["hover"]};
+                border-color: {colors["border_strong"]};
+            }}
+            QPushButton:pressed {{
+                background: {colors["accent_soft"]};
+            }}
+            QPushButton#primaryButton {{
+                background: {colors["accent"]};
+                color: #ffffff;
+                border-color: {colors["accent"]};
+                font-weight: 700;
+            }}
+            QPushButton#dangerButton {{
+                color: #ffffff;
+                background: {colors["danger"]};
+                border-color: {colors["danger"]};
+            }}
+            QSlider::groove:horizontal {{
+                border: none;
+                height: 6px;
+                background: {colors["border"]};
+                border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {colors["accent"]};
+                border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {colors["panel_alt"]};
+                border: 2px solid {colors["accent"]};
+                width: 14px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }}
+            QDockWidget#listManager {{
+                color: {colors["text"]};
+            }}
+            QDockWidget#listManager::title {{
+                background: {colors["panel"]};
+                text-align: left;
+                padding: 10px 12px;
+                border-bottom: 1px solid {colors["border"]};
+                font-weight: 700;
+            }}
+            QTabWidget#listTabs::pane {{
+                border: none;
+                background: {colors["panel"]};
+            }}
+            QTabBar::tab {{
+                background: transparent;
+                color: {colors["text_muted"]};
+                padding: 8px 12px;
+                margin-right: 4px;
+                border-bottom: 2px solid transparent;
+            }}
+            QTabBar::tab:selected {{
+                color: {colors["text"]};
+                border-bottom-color: {colors["accent"]};
+                font-weight: 700;
+            }}
+            QWidget#listToolbar {{
+                background: {colors["panel_alt"]};
+                border: 1px solid {colors["border"]};
+                border-radius: 12px;
+                padding: 4px;
+            }}
+            QDialog {{
+                background: {colors["window"]};
+            }}
+            QDialogButtonBox {{
+                border-top: 1px solid {colors["border"]};
+                padding-top: 12px;
+            }}
+        """
+
+    @staticmethod
+    def _toolbar_group(title: str) -> tuple[QWidget, QHBoxLayout]:
+        group = QWidget()
+        group.setObjectName("toolbarGroup")
+        layout = QHBoxLayout(group)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
+        label = QLabel(title)
+        label.setObjectName("toolbarSectionLabel")
+        layout.addWidget(label)
+        return group, layout
 
     def _apply_ui_density(self):
         scale = max(80, min(160, int(self.settings.ui_scale_percent)))
         compact = bool(self.settings.compact_ui)
         base_icon = self.style().pixelMetric(QStyle.PixelMetric.PM_SmallIconSize) or 16
         icon_size = max(14, int(base_icon * (scale / 100.0)))
-        spacing = 2 if compact else 4
+        spacing = 6 if compact else 10
         if self.main_toolbar:
             self.main_toolbar.setIconSize(QSize(icon_size, icon_size))
-            self.main_toolbar.setStyleSheet(f"QToolBar {{ spacing: {spacing}px; }}")
         self.grid_layout.setSpacing(spacing)
 
     def _build_menus(self):
@@ -1911,29 +2204,21 @@ class NewsBoard(QMainWindow):
         self.manage_lists_button.setToolTip(tr("UI", "Show or hide list manager"))
         self.manage_lists_button.toggled.connect(self.list_manager.setVisible)
         self.list_manager.visibilityChanged.connect(self.manage_lists_button.setChecked)
-        tb.addWidget(self.manage_lists_button)
-
-        spacer_small = QWidget()
-        spacer_small.setFixedWidth(6)
-        tb.addWidget(spacer_small)
+        self.manage_lists_button.setObjectName("primaryButton")
 
         self.url_input = QLineEdit()
+        self.url_input.setObjectName("urlInput")
         self.url_input.setPlaceholderText(tr("UI", "Enter URL or iframe"))
         self.url_input.setToolTip(tr("UI", "Paste a stream URL or iframe"))
         self.url_action = QWidgetAction(self)
         self.url_action.setDefaultWidget(self.url_input)
-        tb.addAction(self.url_action)
 
         self.add_video_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton),
             tr("UI", "Add Video"),
         )
+        self.add_video_button.setObjectName("primaryButton")
         self.add_video_button.clicked.connect(self.add_video_from_input)
-        tb.addWidget(self.add_video_button)
-
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        tb.addWidget(spacer)
 
         self.volume_label = QLabel(tr("UI", "Volume"))
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1944,64 +2229,79 @@ class NewsBoard(QMainWindow):
         self.volume_slider.setToolTip(tr("UI", "Controls active tile volume"))
         self.volume_slider.valueChanged.connect(self.on_volume_changed)
 
-        tb.addWidget(self.volume_label)
-        tb.addWidget(self.volume_slider)
-
         self.mute_all_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_MediaVolumeMuted),
             tr("UI", "Mute All"),
         )
         self.mute_all_button.clicked.connect(self.mute_all_tiles)
-        tb.addWidget(self.mute_all_button)
 
         self.next_audio_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward),
             tr("UI", "Next Audio"),
         )
         self.next_audio_button.clicked.connect(self.cycle_active_audio)
-        tb.addWidget(self.next_audio_button)
 
         self.layout_combo = QComboBox()
         self.layout_combo.addItems(LAYOUT_MODES)
         self.layout_combo.setToolTip(tr("UI", "Grid layout"))
         self.layout_combo.setCurrentText(self.settings.layout_mode)
         self.layout_combo.currentTextChanged.connect(self.on_layout_mode_changed)
-        tb.addWidget(self.layout_combo)
 
         self.scene_combo = QComboBox()
         self.scene_combo.setMinimumWidth(160)
         self.scene_combo.setToolTip(tr("UI", "Saved scenes"))
         self.scene_combo.currentTextChanged.connect(self.apply_scene_by_name)
-        tb.addWidget(self.scene_combo)
 
         self.save_scene_button = QPushButton(tr("UI", "Save Scene"))
         self.save_scene_button.clicked.connect(self.save_scene_prompt)
-        tb.addWidget(self.save_scene_button)
-
-        spacer2 = QWidget()
-        spacer2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        tb.addWidget(spacer2)
 
         self.fullscreen_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton),
             tr("UI", "Fullscreen"),
         )
         self.fullscreen_button.clicked.connect(self.toggle_grid_fullscreen)
-        tb.addWidget(self.fullscreen_button)
 
         self.reload_all_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
             tr("UI", "Reload All"),
         )
         self.reload_all_button.clicked.connect(self.reload_all_videos)
-        tb.addWidget(self.reload_all_button)
 
         self.remove_all_button = QPushButton(
             self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon),
             tr("UI", "Remove All"),
         )
+        self.remove_all_button.setObjectName("dangerButton")
         self.remove_all_button.clicked.connect(self.remove_all_videos)
-        tb.addWidget(self.remove_all_button)
+
+        sources_group, sources_layout = self._toolbar_group(tr("UI", "Sources"))
+        sources_layout.addWidget(self.manage_lists_button)
+        sources_layout.addWidget(self.url_input)
+        sources_layout.addWidget(self.add_video_button)
+        tb.addWidget(sources_group)
+
+        audio_group, audio_layout = self._toolbar_group(tr("UI", "Audio"))
+        audio_layout.addWidget(self.volume_label)
+        audio_layout.addWidget(self.volume_slider)
+        audio_layout.addWidget(self.mute_all_button)
+        audio_layout.addWidget(self.next_audio_button)
+        tb.addWidget(audio_group)
+
+        layout_group, layout_layout = self._toolbar_group(tr("UI", "Layout"))
+        layout_layout.addWidget(self.layout_combo)
+        layout_layout.addWidget(self.scene_combo)
+        layout_layout.addWidget(self.save_scene_button)
+        tb.addWidget(layout_group)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tb.addWidget(spacer)
+
+        session_group, session_layout = self._toolbar_group(tr("UI", "Session"))
+        session_layout.addWidget(self.fullscreen_button)
+        session_layout.addWidget(self.reload_all_button)
+        session_layout.addWidget(self.remove_all_button)
+        tb.addWidget(session_group)
 
         self.shortcut_add_all_feeds = QAction(self)
         self.shortcut_add_all_feeds.setShortcut(QKeySequence("Ctrl+Shift+A"))
@@ -2014,8 +2314,8 @@ class NewsBoard(QMainWindow):
         self.addAction(self.shortcut_delete)
 
         self.shortcut_fullscreen = QAction(self)
-        self.shortcut_fullscreen.setShortcut(QKeySequence("F"))
-        self.shortcut_fullscreen.triggered.connect(self.toggle_first_fullscreen)
+        self.shortcut_fullscreen.setShortcut(QKeySequence("F11"))
+        self.shortcut_fullscreen.triggered.connect(self.toggle_grid_fullscreen)
         self.addAction(self.shortcut_fullscreen)
 
         self.shortcut_command_palette = QAction(self)
@@ -2245,6 +2545,8 @@ class NewsBoard(QMainWindow):
             item = QListWidgetItem(name)
             item.setData(Qt.ItemDataRole.UserRole, normalize_feed_record(record))
             w.addItem(item)
+        if not self.news_feeds:
+            self.status_label.setText(tr("UI", "No saved feeds yet"))
 
     def save_news_feeds(self):
         f, _, _, _ = default_files()
@@ -2363,6 +2665,8 @@ class NewsBoard(QMainWindow):
             item = QListWidgetItem(name)
             item.setData(Qt.ItemDataRole.UserRole, url)
             w.addItem(item)
+        if not self.playlists and not self.video_widgets:
+            self.status_label.setText(tr("UI", "No playlists saved"))
 
     def save_playlists(self):
         _, f, _, _ = default_files()
@@ -2645,6 +2949,8 @@ class NewsBoard(QMainWindow):
                 wid.setParent(None)
 
         self.list_manager.grid_list_widget.clear()
+        self.grid_empty_state.show()
+        self.grid_layout.addWidget(self.grid_empty_state, 0, 0, 1, 1, Qt.AlignmentFlag.AlignCenter)
 
         self._audio_enforce_generation += 1
 
@@ -2660,7 +2966,11 @@ class NewsBoard(QMainWindow):
 
         if n_active == 0:
             self.list_manager.grid_list_widget.clear()
+            self.grid_empty_state.show()
+            self.grid_layout.addWidget(self.grid_empty_state, 0, 0, 1, 1, Qt.AlignmentFlag.AlignCenter)
             return
+
+        self.grid_empty_state.hide()
 
         mode = getattr(self.settings, "layout_mode", "auto")
         if mode == "2x2":
@@ -2885,6 +3195,8 @@ class NewsBoard(QMainWindow):
             self.fullscreen_tile = tile
             tile.set_is_fullscreen(True)
 
+            self.menuBar().hide()
+            self.statusBar().hide()
             if self.main_toolbar:
                 self.main_toolbar.hide()
             self.list_manager.hide()
@@ -2927,18 +3239,10 @@ class NewsBoard(QMainWindow):
                     self.restoreGeometry(geom)
             self.window_state_before_fullscreen = None
 
+        self.menuBar().show()
+        self.statusBar().show()
         if self.main_toolbar:
             self.main_toolbar.show()
-        if hasattr(self, "manage_lists_button"):
-            self.manage_lists_button.show()
-        if self.url_action:
-            self.url_action.setVisible(True)
-        if hasattr(self, "add_video_button"):
-            self.add_video_button.show()
-        if hasattr(self, "volume_label"):
-            self.volume_label.show()
-        if hasattr(self, "volume_slider"):
-            self.volume_slider.show()
 
         for w in self.video_widgets:
             w.show()
@@ -2964,11 +3268,10 @@ class NewsBoard(QMainWindow):
                 "is_maximized": self.isMaximized(),
                 "list_manager_visible": self.list_manager.isVisible(),
             }
-            self.manage_lists_button.hide()
-            self.url_action.setVisible(False)
-            self.add_video_button.hide()
-            self.volume_label.hide()
-            self.volume_slider.hide()
+            self.menuBar().hide()
+            self.statusBar().hide()
+            if self.main_toolbar:
+                self.main_toolbar.hide()
             self.list_manager.hide()
             self.showFullScreen()
             self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
