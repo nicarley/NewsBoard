@@ -19,6 +19,7 @@ from PyQt6.QtCore import (
     QByteArray,
     QCoreApplication,
     QEvent,
+    QMimeData,
     QTimer,
     QUrl,
     Qt,
@@ -31,6 +32,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction,
+    QDrag,
     QIcon,
     QKeySequence,
     QPalette,
@@ -87,7 +89,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "26.03.06"
+APP_VERSION = "26.03.13"
 LAYOUT_MODES = ["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"]
 
 
@@ -128,13 +130,21 @@ def migrate_legacy_settings() -> None:
 
 def setup_logging(log_path: Path) -> logging.Logger:
     logger = logging.getLogger(APP_NAME)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.WARNING)
+    logger.propagate = False
     if not logger.handlers:
         fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh = logging.FileHandler(log_path, encoding="utf-8", delay=True)
         fh.setFormatter(fmt)
         logger.addHandler(fh)
     return logger
+
+
+def configure_logging(logger: logging.Logger, verbose: bool) -> None:
+    level = logging.INFO if verbose else logging.WARNING
+    logger.setLevel(level)
+    for handler in logger.handlers:
+        handler.setLevel(level)
 
 
 def safe_disconnect(signal, slot=None) -> None:
@@ -316,6 +326,7 @@ class AppSettings:
     show_operational_overlays: bool = True
     watchdog_enabled: bool = True
     watchdog_down_seconds: int = 20
+    verbose_logging: bool = False
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=4)
@@ -342,6 +353,7 @@ class AppSettings:
         s.show_operational_overlays = bool(d.get("show_operational_overlays", s.show_operational_overlays))
         s.watchdog_enabled = bool(d.get("watchdog_enabled", s.watchdog_enabled))
         s.watchdog_down_seconds = max(5, min(300, int(d.get("watchdog_down_seconds", s.watchdog_down_seconds))))
+        s.verbose_logging = bool(d.get("verbose_logging", s.verbose_logging))
         return s
 
 
@@ -487,6 +499,7 @@ class QtTile(QGraphicsView):
     requestRemove = pyqtSignal(object)
     requestPip = pyqtSignal(object)
     requestActive = pyqtSignal(object)
+    requestReorder = pyqtSignal(object, object)
     titleChanged = pyqtSignal(str)
     healthChanged = pyqtSignal(object)
 
@@ -507,6 +520,7 @@ class QtTile(QGraphicsView):
         self.is_fullscreen_tile = False
         self.is_pip_tile = False
         self._settings = settings
+        self.setAcceptDrops(True)
         self.feed_profile = feed_profile or {}
         self.force_backend = str(self.feed_profile.get("preferred_backend", "auto")).lower()
         if self.force_backend not in ("auto", "qt", "embed"):
@@ -524,6 +538,9 @@ class QtTile(QGraphicsView):
         self.buffering_seconds = 0.0
         self.estimated_latency_ms = 0
         self.down_since: Optional[datetime] = None
+        self._highlight_state: Tuple[bool, bool] = (False, False)
+        self._drag_start_pos = None
+        self._drop_hover = False
         self._latency_timer = QTimer(self)
         self._latency_timer.setInterval(1000)
         self._latency_timer.timeout.connect(self._tick_overlay_metrics)
@@ -654,19 +671,41 @@ class QtTile(QGraphicsView):
         self.remove_button.clicked.connect(lambda: self.requestRemove.emit(self))
 
         self.play_url(self.url)
-        self._latency_timer.start()
         self._set_health("idle")
+        self._sync_overlay_timer()
         self.controls.show()
 
     def _apply_tile_styles(self):
+        active_audio, focused = self._highlight_state
+        border = "border: none;"
+        if active_audio:
+            border = "border: 3px solid #2a82da;"
+        elif focused:
+            border = "border: 2px solid #6ea9db;"
+        elif self._drop_hover:
+            border = "border: 2px dashed #f0c75e;"
         self.setStyleSheet(
-            """
-            QGraphicsView#tile { border-radius: 10px; background: rgba(20, 20, 20, 255); border: none; }
-            QWidget#controls { background: rgba(0, 0, 0, 140); }
-            QLabel { padding-left: 6px; color: white; }
-            QWidget#controls QPushButton { border: none; padding: 0px; margin: 0px; background: transparent; }
+            f"""
+            QGraphicsView#tile {{ border-radius: 10px; background: rgba(20, 20, 20, 255); {border} }}
+            QWidget#controls {{ background: rgba(0, 0, 0, 140); }}
+            QLabel {{ padding-left: 6px; color: white; }}
+            QWidget#controls QPushButton {{ border: none; padding: 0px; margin: 0px; background: transparent; }}
             """
         )
+
+    def set_highlight_state(self, active_audio: bool, focused: bool) -> None:
+        state = (active_audio, focused)
+        if state == self._highlight_state:
+            return
+        self._highlight_state = state
+        self._apply_tile_styles()
+
+    def _sync_overlay_timer(self) -> None:
+        if self._settings.show_operational_overlays:
+            if not self._latency_timer.isActive():
+                self._latency_timer.start()
+            return
+        self._latency_timer.stop()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -697,8 +736,69 @@ class QtTile(QGraphicsView):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.pos()
             self.requestActive.emit(self)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            super().mouseMoveEvent(event)
+            return
+        if self._drag_start_pos is None:
+            super().mouseMoveEvent(event)
+            return
+        if (event.pos() - self._drag_start_pos).manhattanLength() < QApplication.startDragDistance():
+            super().mouseMoveEvent(event)
+            return
+        self._start_drag()
+        self._drag_start_pos = None
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start_pos = None
+        super().mouseReleaseEvent(event)
+
+    def _start_drag(self) -> None:
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(self.title)
+        drag.setMimeData(mime)
+        try:
+            drag.setPixmap(self.grab())
+        except Exception:
+            pass
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event):
+        source = event.source()
+        if isinstance(source, QtTile) and source is not self:
+            self._drop_hover = True
+            self._apply_tile_styles()
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        source = event.source()
+        if isinstance(source, QtTile) and source is not self:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._drop_hover = False
+        self._apply_tile_styles()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self._drop_hover = False
+        self._apply_tile_styles()
+        source = event.source()
+        if isinstance(source, QtTile) and source is not self:
+            self.requestReorder.emit(source, self)
+            event.acceptProposedAction()
+            return
+        event.ignore()
 
     def contextMenuEvent(self, event: QEvent):
         menu = QMenu(self)
@@ -796,10 +896,13 @@ class QtTile(QGraphicsView):
         self.health_badge.setStyleSheet(
             f"background-color: {color}; color: white; padding: 3px 6px; border-radius: 4px; font-weight: bold;"
         )
+        self._sync_overlay_timer()
         self._refresh_ops_overlay()
         self.healthChanged.emit(self)
 
     def _tick_overlay_metrics(self):
+        if not self._settings.show_operational_overlays:
+            return
         if self.health_state in ("buffering", "loading", "stalled", "reconnecting"):
             self.buffering_seconds += 1.0
         self._refresh_ops_overlay()
@@ -940,6 +1043,7 @@ class QtTile(QGraphicsView):
 
     def set_overlay_visibility(self, show_ops: bool):
         self._settings.show_operational_overlays = show_ops
+        self._sync_overlay_timer()
         self._refresh_ops_overlay()
 
     def _refresh_icons(self):
@@ -1424,6 +1528,7 @@ class SettingsDialog(QDialog):
         self.audio_follow_selection = QCheckBox(tr("Settings", "Audio follows selected tile"))
         self.show_operational_overlays = QCheckBox(tr("Settings", "Show tile operational overlays"))
         self.watchdog_enabled = QCheckBox(tr("Settings", "Enable stream watchdog"))
+        self.verbose_logging = QCheckBox(tr("Settings", "Enable verbose background logging"))
 
         self.ui_scale_percent = QSlider(Qt.Orientation.Horizontal)
         self.ui_scale_percent.setRange(80, 160)
@@ -1456,6 +1561,7 @@ class SettingsDialog(QDialog):
         form.addRow("", self.audio_follow_selection)
         form.addRow("", self.show_operational_overlays)
         form.addRow("", self.watchdog_enabled)
+        form.addRow("", self.verbose_logging)
 
         line = QHBoxLayout()
         self.btn_export = QPushButton(tr("Settings", "Export profile"))
@@ -1495,6 +1601,7 @@ class SettingsDialog(QDialog):
         self.show_operational_overlays.setChecked(s.show_operational_overlays)
         self.watchdog_enabled.setChecked(s.watchdog_enabled)
         self.watchdog_down_seconds.setValue(s.watchdog_down_seconds)
+        self.verbose_logging.setChecked(s.verbose_logging)
 
     def do_import(self):
         if self._sm.import_profile(self):
@@ -1520,6 +1627,8 @@ class SettingsDialog(QDialog):
         s.show_operational_overlays = bool(self.show_operational_overlays.isChecked())
         s.watchdog_enabled = bool(self.watchdog_enabled.isChecked())
         s.watchdog_down_seconds = int(self.watchdog_down_seconds.value())
+        s.verbose_logging = bool(self.verbose_logging.isChecked())
+        configure_logging(self._sm.logger, s.verbose_logging)
         self._sm.save()
 
 
@@ -2407,6 +2516,7 @@ class NewsBoard(QMainWindow):
         vw.requestPip.connect(self.toggle_pip)
         vw.requestRemove.connect(self.remove_video_widget)
         vw.requestActive.connect(self.activate_tile_audio)
+        vw.requestReorder.connect(self.reorder_video_widget_pair)
         vw.titleChanged.connect(self.on_tile_title_changed)
         vw.healthChanged.connect(self.on_tile_health_changed)
 
@@ -2454,6 +2564,7 @@ class NewsBoard(QMainWindow):
             safe_disconnect(widget.requestPip)
             safe_disconnect(widget.requestRemove)
             safe_disconnect(widget.requestActive)
+            safe_disconnect(widget.requestReorder)
             safe_disconnect(widget.titleChanged)
             safe_disconnect(widget.healthChanged)
 
@@ -2515,6 +2626,7 @@ class NewsBoard(QMainWindow):
             safe_disconnect(w.requestPip)
             safe_disconnect(w.requestRemove)
             safe_disconnect(w.requestActive)
+            safe_disconnect(w.requestReorder)
             safe_disconnect(w.titleChanged)
             safe_disconnect(w.healthChanged)
             try:
@@ -2672,11 +2784,10 @@ class NewsBoard(QMainWindow):
 
     def _update_active_tile_styles(self):
         for tile in self.video_widgets:
-            tile._apply_tile_styles()
-            if tile is self.currently_unmuted and self.settings.audio_policy == "single":
-                tile.setStyleSheet(tile.styleSheet() + "QGraphicsView#tile { border: 3px solid #2a82da; }")
-            elif tile is self.focused_tile:
-                tile.setStyleSheet(tile.styleSheet() + "QGraphicsView#tile { border: 2px solid #6ea9db; }")
+            tile.set_highlight_state(
+                tile is self.currently_unmuted and self.settings.audio_policy == "single",
+                tile is self.focused_tile,
+            )
 
     def _fade_tile_volume(self, tile: QtTile, target_percent: int):
         duration = int(self.settings.audio_fade_ms)
@@ -2891,6 +3002,17 @@ class NewsBoard(QMainWindow):
         self.video_widgets = new_order_widgets + pip_widgets
         self.update_grid()
 
+    def reorder_video_widget_pair(self, source: QtTile, target: QtTile):
+        if source not in self.video_widgets or target not in self.video_widgets or source is target:
+            return
+        source_index = self.video_widgets.index(source)
+        target_index = self.video_widgets.index(target)
+        widget = self.video_widgets.pop(source_index)
+        self.video_widgets.insert(target_index, widget)
+        self.focused_tile = widget
+        self.update_grid()
+        self._update_active_tile_styles()
+
     def reload_all_videos(self):
         for widget in self.video_widgets:
             widget.safe_reload()
@@ -3035,6 +3157,7 @@ class NewsBoard(QMainWindow):
         result = dlg.exec()
 
         if dlg.profile_imported:
+            configure_logging(self.sm.logger, self.sm.settings.verbose_logging)
             self.refresh_ui()
             QMessageBox.information(self, APP_NAME, tr("Settings", "Profile imported and applied."))
         elif result:
@@ -3046,6 +3169,8 @@ class NewsBoard(QMainWindow):
             for tile in self.video_widgets:
                 tile._settings = self.settings
                 tile.set_overlay_visibility(self.settings.show_operational_overlays)
+            self._update_active_tile_styles()
+            self._enforce_audio_policy_with_retries()
             QMessageBox.information(self, APP_NAME, tr("Settings", "Settings saved"))
 
     def open_diagnostics(self):
@@ -3109,10 +3234,19 @@ def main():
 
     _, _, _, log_file_path = default_files()
     logger = setup_logging(log_file_path)
+    sm = SettingsManager(logger)
+    sm.load()
+    configure_logging(logger, sm.settings.verbose_logging)
 
     def qt_message_handler(msg_type, _msg_log_context, msg_string):
         try:
-            logger.info("%s: %s", msg_type.name, msg_string)
+            if sm.settings.verbose_logging:
+                logger.info("%s: %s", msg_type.name, msg_string)
+                return
+            if msg_type.name in ("QtWarningMsg",):
+                logger.warning("%s: %s", msg_type.name, msg_string)
+            elif msg_type.name in ("QtCriticalMsg", "QtFatalMsg"):
+                logger.error("%s: %s", msg_type.name, msg_string)
         except Exception:
             pass
 
@@ -3120,9 +3254,6 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationDisplayName(APP_NAME)
-
-    sm = SettingsManager(logger)
-    sm.load()
 
     win = NewsBoard(sm)
     win.show()
