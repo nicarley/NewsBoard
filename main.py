@@ -89,7 +89,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "26.03.13"
+APP_VERSION = "26.03.17"
 LAYOUT_MODES = ["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"]
 
 
@@ -726,7 +726,8 @@ class QtTile(QGraphicsView):
         self._apply_tile_styles()
 
     def _sync_overlay_timer(self) -> None:
-        if self._settings.show_operational_overlays:
+        should_run = self._settings.show_operational_overlays and self.isVisible()
+        if should_run:
             if not self._latency_timer.isActive():
                 self._latency_timer.start()
             return
@@ -782,6 +783,14 @@ class QtTile(QGraphicsView):
     def mouseReleaseEvent(self, event):
         self._drag_start_pos = None
         super().mouseReleaseEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_overlay_timer()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._sync_overlay_timer()
 
     def _start_drag(self) -> None:
         drag = QDrag(self)
@@ -1067,6 +1076,9 @@ class QtTile(QGraphicsView):
         self._refresh_icons()
 
     def set_overlay_visibility(self, show_ops: bool):
+        if self._settings.show_operational_overlays == show_ops:
+            self._sync_overlay_timer()
+            return
         self._settings.show_operational_overlays = show_ops
         self._sync_overlay_timer()
         self._refresh_ops_overlay()
@@ -1749,6 +1761,8 @@ class NewsBoard(QMainWindow):
         self.scenes: Dict[str, Dict[str, Any]] = {}
         self.last_watchdog_alert: Dict[str, datetime] = {}
         self.scene_combo: Optional[QComboBox] = None
+        self._last_grid_signature: Optional[Tuple[Any, ...]] = None
+        self._grid_list_signature: Optional[Tuple[Any, ...]] = None
 
         self.watchdog_timer = QTimer(self)
         self.watchdog_timer.setInterval(2000)
@@ -1784,8 +1798,13 @@ class NewsBoard(QMainWindow):
 
         self._queue = deque()
         self._queue_timer = QTimer(self)
-        self._queue_timer.setInterval(120)
+        self._queue_timer.setInterval(40)
         self._queue_timer.timeout.connect(self._process_queue)
+        self._audio_retry_timer = QTimer(self)
+        self._audio_retry_timer.setInterval(self.AUDIO_RETRY_DELAY_MS)
+        self._audio_retry_timer.timeout.connect(self._run_audio_retry)
+        self._audio_retry_generation = 0
+        self._audio_retry_remaining = 0
 
         self.news_feeds: Dict[str, Dict[str, Any]] = {}
         self.playlists: Dict[str, str] = {}
@@ -2805,10 +2824,26 @@ class NewsBoard(QMainWindow):
         if not self._queue:
             self._queue_timer.stop()
             return
-        url, title, feed_profile = self._queue.popleft()
-        self.create_video_widget(url, title, feed_profile)
+        batch_size = min(4, len(self._queue))
+        for _ in range(batch_size):
+            url, title, feed_profile = self._queue.popleft()
+            self.create_video_widget(url, title, feed_profile, refresh_grid=False, enforce_audio=False)
+            if not self._queue:
+                break
+        self.update_grid()
+        self._enforce_audio_policy_with_retries()
+        if not self._queue:
+            self._queue_timer.stop()
 
-    def create_video_widget(self, url, title, feed_profile: Optional[Dict[str, Any]] = None):
+    def create_video_widget(
+            self,
+            url,
+            title,
+            feed_profile: Optional[Dict[str, Any]] = None,
+            *,
+            refresh_grid: bool = True,
+            enforce_audio: bool = True,
+    ):
         is_first_video = not bool(self.video_widgets)
         profile = normalize_feed_record(feed_profile or {"url": url})
         default_muted = bool(profile.get("start_muted", True))
@@ -2833,8 +2868,10 @@ class NewsBoard(QMainWindow):
         elif not muted and self.settings.audio_policy == "single":
             self.currently_unmuted = vw
 
-        self.update_grid()
-        self._enforce_audio_policy_with_retries()
+        if refresh_grid:
+            self.update_grid()
+        if enforce_audio:
+            self._enforce_audio_policy_with_retries()
 
     def remove_video_from_grid_list(self):
         items = self.list_manager.grid_list_widget.selectedItems()
@@ -2941,6 +2978,8 @@ class NewsBoard(QMainWindow):
             w.deleteLater()
 
         self.video_widgets.clear()
+        self._last_grid_signature = None
+        self._grid_list_signature = None
 
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
@@ -2953,18 +2992,40 @@ class NewsBoard(QMainWindow):
         self.grid_layout.addWidget(self.grid_empty_state, 0, 0, 1, 1, Qt.AlignmentFlag.AlignCenter)
 
         self._audio_enforce_generation += 1
+        self._audio_retry_timer.stop()
+        self._audio_retry_remaining = 0
 
         QTimer.singleShot(0, lambda: setattr(self, "_is_clearing", False))
 
-    def update_grid(self):
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            _widget = item.widget()
+    def _grid_signature(self, active_widgets: list[QtTile], mode: str) -> Tuple[Any, ...]:
+        return mode, tuple(id(w) for w in active_widgets)
 
+    def _grid_list_state(self) -> Tuple[Any, ...]:
+        return tuple((id(w), w.title) for w in self.video_widgets)
+
+    def _sync_grid_list(self) -> None:
+        signature = self._grid_list_state()
+        if signature == self._grid_list_signature:
+            return
+        w = self.list_manager.grid_list_widget
+        w.setUpdatesEnabled(False)
+        try:
+            w.clear()
+            for tile in self.video_widgets:
+                item = QListWidgetItem(tile.title)
+                item.setData(Qt.ItemDataRole.UserRole, tile)
+                w.addItem(item)
+        finally:
+            w.setUpdatesEnabled(True)
+        self._grid_list_signature = signature
+
+    def update_grid(self, force: bool = False):
         active_widgets = [w for w in self.video_widgets if w not in self.pip_windows]
         n_active = len(active_widgets)
 
         if n_active == 0:
+            self._last_grid_signature = None
+            self._grid_list_signature = None
             self.list_manager.grid_list_widget.clear()
             self.grid_empty_state.show()
             self.grid_layout.addWidget(self.grid_empty_state, 0, 0, 1, 1, Qt.AlignmentFlag.AlignCenter)
@@ -2992,28 +3053,38 @@ class NewsBoard(QMainWindow):
             cols = max(1, math.isqrt(n_active))
             rows = math.ceil(n_active / cols)
 
-        for i in range(self.grid_layout.columnCount()):
-            self.grid_layout.setColumnStretch(i, 0)
-        for i in range(self.grid_layout.rowCount()):
-            self.grid_layout.setRowStretch(i, 0)
+        layout_signature = self._grid_signature(active_widgets, mode)
+        if not force and layout_signature == self._last_grid_signature:
+            self._sync_grid_list()
+            return
 
-        for i in range(cols):
-            self.grid_layout.setColumnStretch(i, 1)
-        for i in range(rows):
-            self.grid_layout.setRowStretch(i, 1)
+        self.central_widget_container.setUpdatesEnabled(False)
+        try:
+            while self.grid_layout.count():
+                item = self.grid_layout.takeAt(0)
+                _widget = item.widget()
 
-        for i, w in enumerate(active_widgets):
-            row = i // cols
-            col = i % cols
-            self.grid_layout.addWidget(w, row, col)
-            w.set_overlay_visibility(self.settings.show_operational_overlays)
-            w.show()
+            for i in range(self.grid_layout.columnCount()):
+                self.grid_layout.setColumnStretch(i, 0)
+            for i in range(self.grid_layout.rowCount()):
+                self.grid_layout.setRowStretch(i, 0)
 
-        self.list_manager.grid_list_widget.clear()
-        for w in self.video_widgets:
-            item = QListWidgetItem(w.title)
-            item.setData(Qt.ItemDataRole.UserRole, w)
-            self.list_manager.grid_list_widget.addItem(item)
+            for i in range(cols):
+                self.grid_layout.setColumnStretch(i, 1)
+            for i in range(rows):
+                self.grid_layout.setRowStretch(i, 1)
+
+            for i, w in enumerate(active_widgets):
+                row = i // cols
+                col = i % cols
+                self.grid_layout.addWidget(w, row, col)
+                w.set_overlay_visibility(self.settings.show_operational_overlays)
+                w.show()
+        finally:
+            self.central_widget_container.setUpdatesEnabled(True)
+
+        self._last_grid_signature = layout_signature
+        self._sync_grid_list()
 
     def toggle_mute_single(self, video_widget: QtTile):
         if self._is_clearing:
@@ -3066,6 +3137,8 @@ class NewsBoard(QMainWindow):
     def on_tile_title_changed(self, new_title):
         if self.sender() == self.currently_unmuted:
             self.status_label.setText(tr("UI", f"Active: {new_title}"))
+        self._grid_list_signature = None
+        self._sync_grid_list()
 
     def on_tile_health_changed(self, tile: QtTile):
         if tile.health_state == "error":
@@ -3155,8 +3228,19 @@ class NewsBoard(QMainWindow):
         self._audio_enforce_generation += 1
         gen = self._audio_enforce_generation
         self._enforce_audio_policy(gen)
-        for i in range(1, self.AUDIO_RETRY_COUNT + 1):
-            QTimer.singleShot(self.AUDIO_RETRY_DELAY_MS * i, lambda g=gen: self._enforce_audio_policy(g))
+        self._audio_retry_generation = gen
+        self._audio_retry_remaining = self.AUDIO_RETRY_COUNT
+        if self._audio_retry_remaining > 0:
+            self._audio_retry_timer.start()
+
+    def _run_audio_retry(self):
+        if self._audio_retry_remaining <= 0:
+            self._audio_retry_timer.stop()
+            return
+        self._enforce_audio_policy(self._audio_retry_generation)
+        self._audio_retry_remaining -= 1
+        if self._audio_retry_remaining <= 0:
+            self._audio_retry_timer.stop()
 
     def mute_all_tiles(self):
         self.currently_unmuted = None
@@ -3252,7 +3336,7 @@ class NewsBoard(QMainWindow):
                 except Exception:
                     pass
 
-        self.update_grid()
+        self.update_grid(force=True)
         self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton))
 
     def toggle_first_fullscreen(self):
@@ -3303,6 +3387,7 @@ class NewsBoard(QMainWindow):
 
         pip_widgets = [vw for vw in self.video_widgets if vw not in new_order_widgets]
         self.video_widgets = new_order_widgets + pip_widgets
+        self._grid_list_signature = None
         self.update_grid()
 
     def reorder_video_widget_pair(self, source: QtTile, target: QtTile):
