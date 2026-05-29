@@ -33,6 +33,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QAction,
     QDrag,
+    QFont,
     QIcon,
     QKeySequence,
     QPalette,
@@ -43,6 +44,17 @@ from PyQt6.QtMultimedia import (
     QMediaPlayer,
 )
 from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
+
+try:
+    from PyQt6.QtWebEngineCore import QWebEngineSettings
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+    WEBENGINE_AVAILABLE = True
+except Exception:
+    QWebEngineSettings = None
+    QWebEngineView = None
+    WEBENGINE_AVAILABLE = False
+
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -62,6 +74,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -89,7 +102,7 @@ except Exception:
 APP_NAME = "NewsBoard"
 APP_ORG = "Farleyman.com"
 APP_DOMAIN = "Farleyman.com"
-APP_VERSION = "26.03.17"
+APP_VERSION = "26.05.29"
 LAYOUT_MODES = ["auto", "2x2", "3x3", "4x4", "1xN", "Nx1"]
 
 
@@ -157,6 +170,61 @@ def safe_disconnect(signal, slot=None) -> None:
         pass
 
 
+def coerce_int(value: Any, default: int, minimum: Optional[int] = None, maximum: Optional[int] = None) -> int:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        out = int(default)
+    if minimum is not None:
+        out = max(minimum, out)
+    if maximum is not None:
+        out = min(maximum, out)
+    return out
+
+
+def coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+    return default
+
+
+def extract_iframe_src(value: str) -> Optional[str]:
+    match = re.search(r"<iframe\b[^>]*\bsrc\s*=\s*(['\"])(.*?)\1", value, re.IGNORECASE | re.DOTALL)
+    if match:
+        return match.group(2).strip()
+    return None
+
+
+def normalize_input_url(value: str) -> str:
+    return (extract_iframe_src(value.strip()) or value.strip())
+
+
+def is_probable_media_url(value: str) -> bool:
+    url = normalize_input_url(value)
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    scheme = parsed.scheme.lower()
+    if scheme in ("http", "https", "rtsp", "rtmp", "mms"):
+        return bool(parsed.netloc)
+    if scheme == "file":
+        return bool(parsed.path)
+    return False
+
+
 YOUTUBE_HOSTS = (
     "youtube.com",
     "youtu.be",
@@ -186,9 +254,9 @@ def is_youtube_url(u: str) -> bool:
 
 
 def build_embed_or_watch(url: str) -> str:
-    m = re.search(r'<iframe[^>]+src="([^"]+)"', url, re.IGNORECASE)
-    if m:
-        url = m.group(1)
+    iframe_src = extract_iframe_src(url)
+    if iframe_src:
+        url = iframe_src
     try:
         p = urlparse(url)
     except Exception:
@@ -220,13 +288,53 @@ def build_embed_or_watch(url: str) -> str:
     return url
 
 
+def build_web_playback_url(url: str) -> str:
+    iframe_src = extract_iframe_src(url)
+    if iframe_src:
+        return iframe_src
+
+    try:
+        p = urlparse(url)
+    except Exception:
+        return url
+
+    netloc = p.netloc.lower()
+    path = p.path.rstrip("/")
+
+    m = re.search(
+        r"(?:https?://)?(?:www\.)?(?:youtube\.com/(?:watch\?v=|v/|embed/|shorts/)|youtu\.be/)([A-Za-z0-9_-]{11})",
+        url,
+    )
+    if m:
+        vid = m.group(1)
+        return (
+            f"https://www.youtube.com/embed/{vid}"
+            "?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1"
+        )
+
+    if "youtube.com" in netloc and path == "/watch":
+        qs = dict(parse_qsl(p.query))
+        v = qs.get("v", "")
+        if len(v) == 11:
+            return (
+                f"https://www.youtube.com/embed/{v}"
+                "?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1"
+            )
+
+    return url
+
+
 def resolve_youtube_to_direct(url: str) -> Optional[str]:
     if not YT_AVAILABLE:
         return None
     ydl_opts = {
         "quiet": True,
         "noprogress": True,
-        "format": "bestvideo*+bestaudio/best",
+        "format": (
+            "best[protocol^=m3u8][acodec!=none]/"
+            "best[ext=mp4][acodec!=none]/"
+            "best[acodec!=none]/best"
+        ),
         "nocookie": True,
         "cachedir": False,
         "logger": SilentLogger(),
@@ -236,15 +344,32 @@ def resolve_youtube_to_direct(url: str) -> Optional[str]:
             info = ydl.extract_info(url, download=False)
             if "url" in info and info.get("acodec") not in (None, "none"):
                 return info["url"]
-            for f in reversed(info.get("formats", [])):
+
+            def is_playable(fmt: Dict[str, Any]) -> bool:
+                if not fmt.get("url") or fmt.get("acodec") in (None, "none"):
+                    return False
+                protocol = str(fmt.get("protocol", "")).lower()
+                ext = str(fmt.get("ext", "")).lower()
+                vcodec = fmt.get("vcodec")
+                if protocol.startswith("m3u8"):
+                    return True
+                return ext in ("mp4", "m4a") and vcodec not in (None, "none")
+
+            formats = [f for f in info.get("formats", []) if is_playable(f)]
+            formats.sort(
+                key=lambda f: (
+                    1 if str(f.get("protocol", "")).lower().startswith("m3u8") else 0,
+                    1 if str(f.get("ext", "")).lower() == "mp4" else 0,
+                    int(f.get("height") or 0),
+                    int(f.get("tbr") or 0),
+                ),
+                reverse=True,
+            )
+            for f in formats:
                 u = f.get("url")
                 if not u:
                     continue
-                if f.get("acodec") in (None, "none"):
-                    continue
-                proto = f.get("protocol", "")
-                if u.endswith(".m3u8") or proto.startswith("http"):
-                    return u
+                return u
     except Exception:
         return None
     return None
@@ -296,11 +421,11 @@ def normalize_feed_record(record: Any) -> Dict[str, Any]:
     if isinstance(record, dict):
         url = str(record.get("url", "")).strip()
         out = default_feed_profile(url)
-        out["start_muted"] = bool(record.get("start_muted", out["start_muted"]))
-        out["preferred_volume"] = max(0, min(100, int(record.get("preferred_volume", out["preferred_volume"]))))
+        out["start_muted"] = coerce_bool(record.get("start_muted"), out["start_muted"])
+        out["preferred_volume"] = coerce_int(record.get("preferred_volume"), out["preferred_volume"], 0, 100)
         backend = str(record.get("preferred_backend", out["preferred_backend"])).strip().lower()
         out["preferred_backend"] = backend if backend in ("auto", "qt", "embed") else "auto"
-        out["low_latency"] = bool(record.get("low_latency", out["low_latency"]))
+        out["low_latency"] = coerce_bool(record.get("low_latency"), out["low_latency"])
         return out
     return default_feed_profile("")
 
@@ -334,26 +459,49 @@ class AppSettings:
     @staticmethod
     def from_dict(d: Dict) -> "AppSettings":
         s = AppSettings()
-        s.audio_policy = d.get("audio_policy", s.audio_policy)
-        s.volume_default = int(d.get("volume_default", s.volume_default))
-        s.yt_mode = d.get("yt_mode", s.yt_mode)
-        s.per_host_preferred_backend = d.get("per_host_preferred_backend", {}) or {}
-        s.privacy_embed_only_youtube = bool(d.get("privacy_embed_only_youtube", s.privacy_embed_only_youtube))
-        s.pause_others_in_fullscreen = bool(d.get("pause_others_in_fullscreen", s.pause_others_in_fullscreen))
-        s.theme = d.get("theme", s.theme)
-        s.layout_mode = d.get("layout_mode", s.layout_mode)
-        s.first_run_done = bool(d.get("first_run_done", s.first_run_done))
-        s.show_list_manager = bool(d.get("show_list_manager", s.show_list_manager))
-        s.compact_ui = bool(d.get("compact_ui", s.compact_ui))
-        s.ui_scale_percent = max(80, min(160, int(d.get("ui_scale_percent", s.ui_scale_percent))))
-        s.max_auto_retries = max(1, min(25, int(d.get("max_auto_retries", s.max_auto_retries))))
-        s.auto_retry_backoff_ms = max(250, min(30000, int(d.get("auto_retry_backoff_ms", s.auto_retry_backoff_ms))))
-        s.audio_follow_selection = bool(d.get("audio_follow_selection", s.audio_follow_selection))
-        s.audio_fade_ms = max(0, min(2000, int(d.get("audio_fade_ms", s.audio_fade_ms))))
-        s.show_operational_overlays = bool(d.get("show_operational_overlays", s.show_operational_overlays))
-        s.watchdog_enabled = bool(d.get("watchdog_enabled", s.watchdog_enabled))
-        s.watchdog_down_seconds = max(5, min(300, int(d.get("watchdog_down_seconds", s.watchdog_down_seconds))))
-        s.verbose_logging = bool(d.get("verbose_logging", s.verbose_logging))
+        if not isinstance(d, dict):
+            return s
+
+        audio_policy = str(d.get("audio_policy", s.audio_policy)).strip().lower()
+        s.audio_policy = audio_policy if audio_policy in ("single", "mixed") else s.audio_policy
+        s.volume_default = coerce_int(d.get("volume_default"), s.volume_default, 0, 100)
+        yt_mode = str(d.get("yt_mode", s.yt_mode)).strip().lower()
+        s.yt_mode = yt_mode if yt_mode in ("direct_when_possible", "embed_only") else s.yt_mode
+        host_backends = d.get("per_host_preferred_backend", {})
+        if isinstance(host_backends, dict):
+            s.per_host_preferred_backend = {
+                str(host).strip().lower(): str(backend).strip().lower()
+                for host, backend in host_backends.items()
+                if str(backend).strip().lower() in ("auto", "qt", "embed")
+            }
+        s.privacy_embed_only_youtube = coerce_bool(
+            d.get("privacy_embed_only_youtube"), s.privacy_embed_only_youtube
+        )
+        s.pause_others_in_fullscreen = coerce_bool(
+            d.get("pause_others_in_fullscreen"), s.pause_others_in_fullscreen
+        )
+        theme = str(d.get("theme", s.theme)).strip().lower()
+        s.theme = theme if theme in ("system", "light", "dark") else s.theme
+        layout_mode = str(d.get("layout_mode", s.layout_mode)).strip()
+        s.layout_mode = layout_mode if layout_mode in LAYOUT_MODES else s.layout_mode
+        s.first_run_done = coerce_bool(d.get("first_run_done"), s.first_run_done)
+        s.show_list_manager = coerce_bool(d.get("show_list_manager"), s.show_list_manager)
+        s.compact_ui = coerce_bool(d.get("compact_ui"), s.compact_ui)
+        s.ui_scale_percent = coerce_int(d.get("ui_scale_percent"), s.ui_scale_percent, 80, 160)
+        s.max_auto_retries = coerce_int(d.get("max_auto_retries"), s.max_auto_retries, 1, 25)
+        s.auto_retry_backoff_ms = coerce_int(
+            d.get("auto_retry_backoff_ms"), s.auto_retry_backoff_ms, 250, 30000
+        )
+        s.audio_follow_selection = coerce_bool(d.get("audio_follow_selection"), s.audio_follow_selection)
+        s.audio_fade_ms = coerce_int(d.get("audio_fade_ms"), s.audio_fade_ms, 0, 2000)
+        s.show_operational_overlays = coerce_bool(
+            d.get("show_operational_overlays"), s.show_operational_overlays
+        )
+        s.watchdog_enabled = coerce_bool(d.get("watchdog_enabled"), s.watchdog_enabled)
+        s.watchdog_down_seconds = coerce_int(
+            d.get("watchdog_down_seconds"), s.watchdog_down_seconds, 5, 300
+        )
+        s.verbose_logging = coerce_bool(d.get("verbose_logging"), s.verbose_logging)
         return s
 
 
@@ -464,11 +612,16 @@ def qt_can_play_hls() -> bool:
 
 
 def choose_backend(url: str, settings: AppSettings) -> str:
-    host = urlparse(url).netloc.lower()
+    try:
+        host = urlparse(url).netloc.lower()
+    except ValueError:
+        host = ""
     if host in settings.per_host_preferred_backend:
         return settings.per_host_preferred_backend[host]
     if is_youtube_url(url):
-        return "embed" if settings.privacy_embed_only_youtube else "qt"
+        if settings.yt_mode == "embed_only" or settings.privacy_embed_only_youtube:
+            return "embed"
+        return "qt"
     return "qt"
 
 
@@ -490,6 +643,38 @@ class YtResolveWorker(QObject):
 
         t = threading.Thread(target=run, daemon=True)
         t.start()
+
+
+class PlaylistFetchWorker(QObject):
+    finished = pyqtSignal(object, bool)
+
+    def __init__(self, playlists: list[Tuple[str, str]], timeout: int = 10, parent=None):
+        super().__init__(parent)
+        self.playlists = playlists
+        self.timeout = timeout
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def start(self):
+        def run():
+            results = []
+            for name, url in self.playlists:
+                if self._cancelled:
+                    break
+                text = None
+                error = ""
+                try:
+                    response = requests.get(url, timeout=self.timeout)
+                    response.raise_for_status()
+                    text = response.text
+                except requests.exceptions.RequestException as exc:
+                    error = str(exc)
+                results.append({"name": name, "url": url, "text": text, "error": error})
+            self.finished.emit(results, self._cancelled)
+
+        threading.Thread(target=run, daemon=True).start()
 
 
 class QtTile(QGraphicsView):
@@ -525,7 +710,7 @@ class QtTile(QGraphicsView):
         self.force_backend = str(self.feed_profile.get("preferred_backend", "auto")).lower()
         if self.force_backend not in ("auto", "qt", "embed"):
             self.force_backend = "auto"
-        self.low_latency = bool(self.feed_profile.get("low_latency", False))
+        self.low_latency = coerce_bool(self.feed_profile.get("low_latency"), False)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.is_playing = False
         self._stall_retries = 0
@@ -535,6 +720,8 @@ class QtTile(QGraphicsView):
         self.last_health_change = datetime.now()
         self.last_playing_at: Optional[datetime] = None
         self.last_load_start: Optional[datetime] = None
+        self._current_source_url = url
+        self._qt_direct_failed_for_url: Optional[str] = None
         self.buffering_seconds = 0.0
         self.estimated_latency_ms = 0
         self.down_since: Optional[datetime] = None
@@ -556,6 +743,21 @@ class QtTile(QGraphicsView):
         # Video Item
         self.video_item = QGraphicsVideoItem()
         self.scene.addItem(self.video_item)
+        self.web_view = None
+        self.web_proxy = None
+        self._using_web_backend = False
+        if WEBENGINE_AVAILABLE:
+            self.web_view = QWebEngineView()
+            self.web_view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+            self.web_proxy = self.scene.addWidget(self.web_view)
+            self.web_proxy.setZValue(1)
+            self.web_proxy.hide()
+            web_settings = self.web_view.settings()
+            web_settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+            web_settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
+            web_settings.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
+            self.web_view.loadStarted.connect(self._on_web_load_started)
+            self.web_view.loadFinished.connect(self._on_web_load_finished)
 
         # Overlay Widget
         self.overlay_widget = QWidget()
@@ -688,33 +890,35 @@ class QtTile(QGraphicsView):
 
     def _apply_tile_styles(self):
         active_audio, focused = self._highlight_state
-        border = "border: 1px solid rgba(255, 255, 255, 0.08);"
-        shadow = "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(28, 31, 37, 255), stop:1 rgba(16, 18, 22, 255));"
+        border = "border: 1px solid rgba(255, 255, 255, 0.10);"
+        shadow = (
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            "stop:0 rgba(31, 39, 51, 255), stop:0.45 rgba(18, 24, 34, 255), stop:1 rgba(10, 14, 21, 255));"
+        )
         if active_audio:
-            border = "border: 3px solid #2f8cff;"
+            border = "border: 3px solid #3da5ff;"
         elif focused:
-            border = "border: 2px solid rgba(158, 198, 255, 0.95);"
+            border = "border: 2px solid rgba(181, 222, 255, 0.95);"
         elif self._drop_hover:
             border = "border: 2px dashed #f0c75e;"
         self.setStyleSheet(
             f"""
-            QGraphicsView#tile {{ border-radius: 14px; {shadow} {border} }}
+            QGraphicsView#tile {{ border-radius: 18px; {shadow} {border} }}
             QWidget#controls {{
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(10, 12, 16, 120),
-                    stop:1 rgba(10, 12, 16, 210));
-                border-top: 1px solid rgba(255, 255, 255, 0.08);
+                    stop:0 rgba(9, 12, 16, 90),
+                    stop:1 rgba(9, 12, 16, 225));
+                border-top: 1px solid rgba(255, 255, 255, 0.10);
             }}
-            QLabel {{ padding-left: 8px; color: white; }}
+            QLabel {{ padding-left: 10px; color: white; }}
             QWidget#controls QPushButton#tileIconButton {{
                 border: none;
                 padding: 0px;
                 margin: 0px;
-                background: transparent;
-                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.04);
+                border-radius: 10px;
             }}
-            QWidget#controls QPushButton#tileIconButton:hover {{ background: rgba(255, 255, 255, 0.10); }}
-            QPushButton#tileOverlayButton:hover {{ background-color: rgba(255, 255, 255, 0.16); }}
+            QPushButton#tileOverlayButton:hover {{ background-color: rgba(255, 255, 255, 0.18); }}
             """
         )
 
@@ -738,6 +942,8 @@ class QtTile(QGraphicsView):
         rect = QRectF(self.rect())
         self.scene.setSceneRect(rect)
         self.video_item.setSize(rect.size())
+        if self.web_proxy is not None:
+            self.web_proxy.setGeometry(rect)
         self.proxy.setGeometry(rect)
 
         # Reposition internal overlay elements
@@ -975,9 +1181,11 @@ class QtTile(QGraphicsView):
             if self.last_load_start is not None:
                 self.estimated_latency_ms = int(
                     max(0.0, (datetime.now() - self.last_load_start).total_seconds()) * 1000)
-            self._set_health("live")
+                self._set_health("live")
             self._set_status_overlay("")
         elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+            if self._handle_invalid_media_fallback():
+                return
             self.label.setText(f"{self.title}  {tr('Tile', 'Invalid media')}")
             self._stall_retries += 1
             self._set_health("error", tr("Tile", "Invalid media"))
@@ -1000,6 +1208,8 @@ class QtTile(QGraphicsView):
             self._set_status_overlay(tr("Tile", "Buffering"))
 
     def on_playback_state_changed(self, state: QMediaPlayer.PlaybackState):
+        if self._using_web_backend:
+            return
         self.is_playing = state == QMediaPlayer.PlaybackState.PlayingState
         if self.is_playing:
             self.last_playing_at = datetime.now()
@@ -1007,6 +1217,23 @@ class QtTile(QGraphicsView):
         self._refresh_icons()
 
     def toggle_play(self):
+        if self._using_web_backend:
+            self._run_web_js(
+                """
+                (function() {
+                    const video = document.querySelector('video');
+                    if (!video) return false;
+                    if (video.paused) {
+                        video.play();
+                        return true;
+                    }
+                    video.pause();
+                    return false;
+                })();
+                """,
+                self._on_web_toggle_complete,
+            )
+            return
         state = self.player.playbackState()
         if state == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
@@ -1016,46 +1243,156 @@ class QtTile(QGraphicsView):
     def play_url(self, url: str):
         chosen = self.force_backend if self.force_backend != "auto" else choose_backend(url, self._settings)
         src = build_embed_or_watch(url)
+        self._current_source_url = url
         self.last_load_start = datetime.now()
         self._set_health("loading")
 
-        if chosen in ("qt", "embed") and is_youtube_url(src):
-            if YT_AVAILABLE:
-                self.label.setText(f"{self.title}  {tr('Tile', 'Resolving')}")
-                self._set_status_overlay(tr("Tile", "Resolving"))
-                self._yt_worker = YtResolveWorker(src, self)
-                self._yt_worker.resolved.connect(lambda direct: self._apply_source(QUrl(direct)))
-                self._yt_worker.failed.connect(
-                    lambda _msg: self.label.setText(f"{self.title}  {tr('Tile', 'Resolve failed')}")
-                )
-                self._yt_worker.failed.connect(lambda _msg: self._set_health("error", tr("Tile", "Resolve failed")))
-                self._yt_worker.failed.connect(lambda _msg: self._set_status_overlay(tr("Tile", "Resolve failed")))
-                self._yt_worker.start()
-                return
-            else:
-                self.label.setText(f"{self.title}  {tr('Tile', 'yt dlp not installed')}")
-                self._set_health("error", tr("Tile", "yt dlp not installed"))
-                self._set_status_overlay(tr("Tile", "yt dlp not installed"))
-                return
+        is_yt = is_youtube_url(src)
 
+        # Priority 1: If it's a YouTube URL and yt-dlp is available and hasn't failed for this URL before,
+        # always attempt yt-dlp resolution first.
+        if is_yt and YT_AVAILABLE and self._qt_direct_failed_for_url != url:
+            self.label.setText(f"{self.title}  {tr('Tile', 'Resolving')}")
+            self._set_status_overlay(tr('Tile', 'Resolving'))
+            self._yt_worker = YtResolveWorker(src, self)
+            self._yt_worker.resolved.connect(lambda direct: self._apply_source(QUrl(direct)))
+            self._yt_worker.failed.connect(lambda _msg: self._handle_youtube_resolve_failure(url))
+            self._yt_worker.start()
+            return
+
+        # Priority 2: If yt-dlp was not attempted (not YouTube, not available, or failed before),
+        # or if the chosen backend is explicitly "embed" for YouTube, then use the web view.
+        if is_yt:  # This block handles all YouTube cases not handled by the yt-dlp attempt above
+            if self._load_youtube_in_web_view(url):
+                return
+            # Provide a more specific message if yt-dlp was the reason for not playing directly
+            if not YT_AVAILABLE:
+                self._show_youtube_embed_unavailable(tr("Tile", "yt-dlp not installed"))
+            else:  # This covers cases where yt-dlp failed or _qt_direct_failed_for_url was set, or chosen was "embed"
+                self._show_youtube_embed_unavailable(tr("Tile", "YouTube playback unavailable"))
+            return
+
+        # Priority 3: For non-YouTube URLs, use QMediaPlayer directly.
         self._apply_source(QUrl(src))
 
     def _apply_source(self, qurl: QUrl):
+        self._deactivate_web_backend()
         self._stall_retries = 0
         self.player.setSource(qurl)
         self.player.play()
         QTimer.singleShot(0, lambda: self.started.emit(self))
 
+    def _handle_invalid_media_fallback(self) -> bool:
+        if self._using_web_backend:
+            return False
+        original_url = self._current_source_url or self.url
+        if not is_youtube_url(original_url):
+            return False
+        self._qt_direct_failed_for_url = original_url
+        self.reconnect_count += 1
+        self._set_health("reconnecting", tr("Tile", "YouTube direct stream rejected"))
+        self._set_status_overlay(tr("Tile", "Opening YouTube embed"))
+        if self._load_youtube_in_web_view(original_url):
+            return True
+        self._show_youtube_embed_unavailable(tr("Tile", "YouTube direct stream rejected"))
+        return True
+
+    def _load_youtube_in_web_view(self, url: str) -> bool:
+        if not WEBENGINE_AVAILABLE or self.web_view is None or self.web_proxy is None:
+            return False
+        self._using_web_backend = True
+        self.video_item.setVisible(False)
+        self.web_proxy.show()
+        try:
+            self.player.stop()
+        except Exception:
+            pass
+        self.label.setText(f"{self.title}  {tr('Tile', 'Opening embed')}")
+        self._set_status_overlay(tr("Tile", "Opening embed"))
+        self.web_view.setUrl(QUrl(build_web_playback_url(url)))
+        QTimer.singleShot(0, lambda: self.started.emit(self))
+        return True
+
+    def _deactivate_web_backend(self) -> None:
+        self._using_web_backend = False
+        self.video_item.setVisible(True)
+        if self.web_proxy is not None:
+            self.web_proxy.hide()
+
+    def _handle_youtube_resolve_failure(self, url: str) -> None:
+        # If yt-dlp resolution fails, try to load the embed
+        if self._load_youtube_in_web_view(url):
+            return
+        self._show_youtube_embed_unavailable(tr("Tile", "Resolve failed"))
+
+    def _show_youtube_embed_unavailable(self, reason: str = "") -> None:
+        detail = reason or tr("Tile", "YouTube playback unavailable")
+        if not WEBENGINE_AVAILABLE:
+            detail = tr("Tile", "Install PyQt6-WebEngine for YouTube embed playback")
+        self.label.setText(f"{self.title}  {detail}")
+        self._set_health("error", detail)
+        self._set_status_overlay(detail)
+
+    def _run_web_js(self, script: str, callback=None) -> None:
+        if not self._using_web_backend or self.web_view is None:
+            return
+        try:
+            self.web_view.page().runJavaScript(script, callback)
+        except Exception:
+            pass
+
+    def _on_web_load_started(self) -> None:
+        if not self._using_web_backend:
+            return
+        self.label.setText(f"{self.title}  {tr('Tile', 'Loading')}")
+        self._set_health("loading")
+        self._set_status_overlay(tr("Tile", "Loading"))
+
+    def _on_web_load_finished(self, ok: bool) -> None:
+        if not self._using_web_backend:
+            return
+        if not ok:
+            self.label.setText(f"{self.title}  {tr('Tile', 'Embed failed')}")
+            self.is_playing = False
+            self._set_health("error", tr("Tile", "Embed failed"))
+            self._set_status_overlay(tr("Tile", "Embed failed"))
+            self._refresh_icons()
+            return
+        self.label.setText(self.title)
+        self.is_playing = True
+        self.last_playing_at = datetime.now()
+        self._set_health("live")
+        self._set_status_overlay("")
+        self._run_web_js("const v=document.querySelector('video'); if(v){ v.muted=true; v.pause(); v.play(); }")
+        self.set_mute_state(self.is_muted)
+        self._refresh_icons()
+
+    def _on_web_toggle_complete(self, result) -> None:
+        self.is_playing = bool(result)
+        if self.is_playing:
+            self.last_playing_at = datetime.now()
+            self._set_health("live")
+            self._set_status_overlay("")
+        self._refresh_icons()
+
     def hard_mute(self):
-        self.audio.setMuted(True)
-        self.audio.setVolume(0.0)
+        if self._using_web_backend:
+            self._run_web_js("const v=document.querySelector('video'); if(v){ v.muted=true; v.volume=0; }")
+        else:
+            self.audio.setMuted(True)
+            self.audio.setVolume(0.0)
         self.is_muted = True
         self._refresh_icons()
 
     def make_active(self, volume_percent: int):
-        vol = max(0, min(100, int(volume_percent))) / 100.0
-        self.audio.setMuted(False)
-        self.audio.setVolume(vol)
+        vol = max(0, min(100, int(volume_percent)) / 100.0)
+        if self._using_web_backend:
+            self._run_web_js(
+                f"const v=document.querySelector('video'); if(v){{ v.muted=false; v.volume={vol:.3f}; v.play(); }}"
+            )
+        else:
+            self.audio.setMuted(False)
+            self.audio.setVolume(vol)
         self.is_muted = False
         self._refresh_icons()
 
@@ -1063,7 +1400,13 @@ class QtTile(QGraphicsView):
         if muted:
             self.hard_mute()
         else:
-            self.audio.setMuted(False)
+            if self._using_web_backend:
+                vol = float(self._settings.volume_default) / 100.0
+                self._run_web_js(
+                    f"const v=document.querySelector('video'); if(v){{ v.muted=false; v.volume={vol:.3f}; }}"
+                )
+            else:
+                self.audio.setMuted(False)
             self.is_muted = False
             self._refresh_icons()
 
@@ -1117,6 +1460,9 @@ class QtTile(QGraphicsView):
 
     def safe_reload(self):
         self._set_health("reconnecting")
+        if self._using_web_backend and self.web_view is not None:
+            self.web_view.reload()
+            return
         try:
             self.player.stop()
         except Exception:
@@ -1147,6 +1493,11 @@ class QtTile(QGraphicsView):
             self._latency_timer.stop()
         except Exception:
             pass
+        if self.web_view is not None:
+            try:
+                self.web_view.stop()
+            except Exception:
+                pass
         safe_disconnect(self.player.playbackStateChanged)
         safe_disconnect(self.player.mediaStatusChanged)
         safe_disconnect(self.mute_button.clicked)
@@ -1179,6 +1530,11 @@ class QtTile(QGraphicsView):
             self.player.deleteLater()
         except Exception:
             pass
+        if self.web_view is not None:
+            try:
+                self.web_view.deleteLater()
+            except Exception:
+                pass
 
     def rename_tile(self):
         new_title, ok = QInputDialog.getText(self, tr("Tile", "Rename"), tr("Tile", "New title"), text=self.title)
@@ -1196,16 +1552,32 @@ class QtTile(QGraphicsView):
 
 class FeedDialog(QDialog):
     def __init__(self, parent=None, name="", url="", profile: Optional[Dict[str, Any]] = None,
-                 show_profile: bool = True):
+                 show_profile: bool = True, existing_names: Optional[set[str]] = None,
+                 original_name: str = ""):
         super().__init__(parent)
         self.setWindowTitle(tr("Feed", "Add or Edit Feed"))
+        self.setObjectName("appDialog")
+        self.setMinimumWidth(520)
+        self.existing_names = {n.lower() for n in (existing_names or set())}
+        self.original_name = original_name.strip().lower()
         form = QFormLayout(self)
+        form.setContentsMargins(20, 18, 20, 18)
+        form.setSpacing(12)
         p = normalize_feed_record(profile or {"url": url})
         self.name_input = QLineEdit(name)
+        self.name_input.setClearButtonEnabled(True)
+        self.name_input.setPlaceholderText(tr("Feed", "Display name"))
         self.url_input = QLineEdit(p["url"] if p["url"] else url)
+        self.url_input.setClearButtonEnabled(True)
+        self.url_input.setPlaceholderText(tr("Feed", "Stream URL, YouTube link, or embed source"))
         self.name_label = QLabel(tr("Feed", "Name"))
         form.addRow(self.name_label, self.name_input)
         form.addRow(tr("Feed", "URL"), self.url_input)
+        self.validation_label = QLabel("")
+        self.validation_label.setObjectName("validationLabel")
+        self.validation_label.setStyleSheet("color: #c95555; font-weight: 700;")
+        self.validation_label.hide()
+        form.addRow("", self.validation_label)
         self.start_muted = QCheckBox(tr("Feed", "Start muted"))
         self.start_muted.setChecked(bool(p["start_muted"]))
         self.preferred_volume = QSlider(Qt.Orientation.Horizontal)
@@ -1223,9 +1595,13 @@ class FeedDialog(QDialog):
             form.addRow("", self.low_latency)
         box = QDialogButtonBox()
         box.setStandardButtons(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.ok_button = box.button(QDialogButtonBox.StandardButton.Ok)
         box.accepted.connect(self.accept)
         box.rejected.connect(self.reject)
         form.addWidget(box)
+        self.name_input.textChanged.connect(self.validate)
+        self.url_input.textChanged.connect(self.validate)
+        self.validate()
 
     def set_name_label(self, text: str):
         self.name_label.setText(text)
@@ -1235,22 +1611,56 @@ class FeedDialog(QDialog):
 
     def get_profile_data(self) -> Dict[str, Any]:
         return {
-            "url": self.url_input.text().strip(),
+            "url": normalize_input_url(self.url_input.text()),
             "start_muted": bool(self.start_muted.isChecked()),
             "preferred_volume": int(self.preferred_volume.value()),
             "preferred_backend": self.preferred_backend.currentText(),
             "low_latency": bool(self.low_latency.isChecked()),
         }
 
+    def set_validation_error(self, message: str) -> None:
+        if message:
+            self.validation_label.setText(message)
+            self.validation_label.show()
+            self.ok_button.setEnabled(False)
+            return
+        self.validation_label.clear()
+        self.validation_label.hide()
+        self.ok_button.setEnabled(True)
+
+    def validate(self) -> bool:
+        name = self.name_input.text().strip()
+        url = self.url_input.text().strip()
+        normalized_name = name.lower()
+        if not name:
+            self.set_validation_error(tr("Feed", "Name is required."))
+            return False
+        if normalized_name in self.existing_names and normalized_name != self.original_name:
+            self.set_validation_error(tr("Feed", "A feed with this name already exists."))
+            return False
+        if not is_probable_media_url(url):
+            self.set_validation_error(tr("Feed", "Enter a valid URL or iframe embed."))
+            return False
+        self.set_validation_error("")
+        return True
+
+    def accept(self):
+        if self.validate():
+            super().accept()
+
 
 class PlaylistViewerDialog(QDialog):
     def __init__(self, parent, channels):
         super().__init__(parent)
         self.setWindowTitle(tr("Playlist", "Select Channels"))
+        self.setObjectName("appDialog")
         self.setMinimumSize(400, 500)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
 
         self.search_input = QLineEdit()
+        self.search_input.setClearButtonEnabled(True)
         self.search_input.setPlaceholderText(tr("Playlist", "Search channels..."))
         self.search_input.textChanged.connect(self.filter_channels)
         layout.addWidget(self.search_input)
@@ -1292,6 +1702,7 @@ class ListManager(QDockWidget):
 
         self.tabs = QTabWidget()
         self.tabs.setObjectName("listTabs")
+        self.tabs.setDocumentMode(True)
         self.setWidget(self.tabs)
 
         style = self.style()
@@ -1302,6 +1713,7 @@ class ListManager(QDockWidget):
         self.news_feed_layout.setSpacing(6)
 
         self.feed_search = QLineEdit()
+        self.feed_search.setClearButtonEnabled(True)
         self.feed_search.setPlaceholderText(tr("List", "Filter feeds"))
         self.feed_search.textChanged.connect(self.filter_feeds)
         self.news_feed_layout.addWidget(self.feed_search)
@@ -1363,6 +1775,7 @@ class ListManager(QDockWidget):
         self.playlists_layout.setSpacing(6)
 
         self.playlist_search = QLineEdit()
+        self.playlist_search.setClearButtonEnabled(True)
         self.playlist_search.setPlaceholderText(tr("List", "Filter playlists"))
         self.playlist_search.textChanged.connect(self.filter_playlists)
         self.playlists_layout.addWidget(self.playlist_search)
@@ -1433,6 +1846,41 @@ class ListManager(QDockWidget):
         self.grid_layout.addWidget(self.grid_list_widget, 1)
         self.tabs.addTab(self.grid_tab, tr("List", "Grid"))
 
+        self.failed_tab = QWidget()
+        self.failed_layout = QVBoxLayout(self.failed_tab)
+        self.failed_layout.setContentsMargins(6, 6, 6, 6)
+        self.failed_layout.setSpacing(6)
+
+        self.failed_toolbar = QWidget()
+        self.failed_toolbar.setObjectName("listToolbar")
+        self.failed_toolbar_layout = QHBoxLayout(self.failed_toolbar)
+        self.failed_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        self.failed_toolbar_layout.setSpacing(6)
+
+        self.reload_failed_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
+                                                tr("List", "Reload"))
+        self.remove_failed_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon),
+                                                tr("List", "Remove"))
+        self.clear_failed_button = QPushButton(style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop),
+                                               tr("List", "Clear"))
+        self.reload_failed_button.setAccessibleName(tr("List", "Reload failed stream"))
+        self.remove_failed_button.setAccessibleName(tr("List", "Remove failed stream"))
+        self.clear_failed_button.setAccessibleName(tr("List", "Clear failed streams"))
+
+        self.failed_toolbar_layout.addWidget(self.reload_failed_button)
+        self.failed_toolbar_layout.addWidget(self.remove_failed_button)
+        self.failed_toolbar_layout.addStretch()
+        self.failed_toolbar_layout.addWidget(self.clear_failed_button)
+
+        self.failed_streams_list_widget = QListWidget()
+        self.failed_streams_list_widget.setObjectName("failedStreamsList")
+        self.failed_streams_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.failed_streams_list_widget.setAccessibleName(tr("List", "Recently Failed Streams"))
+
+        self.failed_layout.addWidget(self.failed_toolbar, 0)
+        self.failed_layout.addWidget(self.failed_streams_list_widget, 1)
+        self.tabs.addTab(self.failed_tab, tr("List", "Failed"))
+
         self.scenes_tab = QWidget()
         self.scenes_layout = QVBoxLayout(self.scenes_tab)
         self.scenes_layout.setContentsMargins(6, 6, 6, 6)
@@ -1482,8 +1930,11 @@ class DiagnosticsDialog(QDialog):
     def __init__(self, parent, settings: SettingsManager):
         super().__init__(parent)
         self.setWindowTitle(tr("Diag", "Diagnostics"))
+        self.setObjectName("appDialog")
         self.setMinimumSize(760, 520)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(12)
 
         feeds, playlists, state, log = (
             settings.feeds_file,
@@ -1504,6 +1955,7 @@ class DiagnosticsDialog(QDialog):
         lines.append(f"State file: {state}  exists={state.exists()}")
         lines.append(f"Log file: {log}  exists={log.exists()}")
         lines.append(f"yt dlp available: {'yes' if YT_AVAILABLE else 'no'}")
+        lines.append(f"Qt WebEngine available: {'yes' if WEBENGINE_AVAILABLE else 'no'}")
 
         tabs = QTabWidget(self)
 
@@ -1546,12 +1998,15 @@ class SettingsDialog(QDialog):
     def __init__(self, parent, sm: SettingsManager):
         super().__init__(parent)
         self.setWindowTitle(tr("Settings", "Settings"))
+        self.setObjectName("appDialog")
         self.setMinimumWidth(540)
         self._sm = sm
         s = sm.settings
         self.profile_imported = False
 
         form = QFormLayout(self)
+        form.setContentsMargins(20, 18, 20, 18)
+        form.setSpacing(12)
 
         self.audio_policy = QComboBox()
         self.audio_policy.addItems(["single", "mixed"])
@@ -1734,19 +2189,30 @@ class NewsBoard(QMainWindow):
         self.setCentralWidget(self.central_widget_container)
 
         self.grid_empty_state = QLabel(
-            tr("UI",
-               "No streams in the board yet.\nOpen Manage Lists or paste a stream URL above to start building a scene."),
+            tr(
+                "UI",
+                "<div style='text-align:center;'>"
+                "<div style='font-size:28px; font-weight:700; margin-bottom:8px;'>Your board is ready</div>"
+                "<div style='font-size:15px;'>Open Manage Lists, load a playlist, or paste a stream URL above to start building a live scene.</div>"
+                "</div>",
+            ),
             self.central_widget_container,
         )
         self.grid_empty_state.setObjectName("gridEmptyState")
         self.grid_empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.grid_empty_state.setWordWrap(True)
+        self.grid_empty_state.setTextFormat(Qt.TextFormat.RichText)
 
         self.status_bar = self.statusBar()
+        self.status_bar.setSizeGripEnabled(False)
         self.status_label = QLabel()
         self.status_label.setObjectName("statusLabel")
         self.status_bar.addPermanentWidget(self.status_label)
         self.status_label.setText(tr("UI", "Ready"))
+        self.save_status_label = QLabel()
+        self.save_status_label.setObjectName("statusLabel")
+        self.status_bar.addPermanentWidget(self.save_status_label)
+        self.save_status_label.setText("")
 
         self.video_widgets: list[QtTile] = []
         self.currently_unmuted: Optional[QtTile] = None
@@ -1760,6 +2226,7 @@ class NewsBoard(QMainWindow):
         self.url_action: Optional[QWidgetAction] = None
         self.scenes: Dict[str, Dict[str, Any]] = {}
         self.last_watchdog_alert: Dict[str, datetime] = {}
+        self.failed_streams: list[Dict[str, Any]] = []
         self.scene_combo: Optional[QComboBox] = None
         self._last_grid_signature: Optional[Tuple[Any, ...]] = None
         self._grid_list_signature: Optional[Tuple[Any, ...]] = None
@@ -1773,6 +2240,9 @@ class NewsBoard(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.list_manager)
 
         self.list_manager.remove_from_grid_button.clicked.connect(self.remove_video_from_grid_list)
+        self.list_manager.reload_failed_button.clicked.connect(self.reload_selected_failed_streams)
+        self.list_manager.remove_failed_button.clicked.connect(self.remove_selected_failed_streams)
+        self.list_manager.clear_failed_button.clicked.connect(self.clear_failed_streams)
         self.list_manager.add_feed_to_grid_button.clicked.connect(self.add_video_from_feed)
         self.list_manager.add_all_feeds_button.clicked.connect(self.add_all_feeds)
         self.list_manager.add_new_feed_button.clicked.connect(self.add_new_feed)
@@ -1805,6 +2275,12 @@ class NewsBoard(QMainWindow):
         self._audio_retry_timer.timeout.connect(self._run_audio_retry)
         self._audio_retry_generation = 0
         self._audio_retry_remaining = 0
+        self._state_save_timer = QTimer(self)
+        self._state_save_timer.setSingleShot(True)
+        self._state_save_timer.setInterval(750)
+        self._state_save_timer.timeout.connect(self.save_state)
+        self._playlist_fetch_worker: Optional[PlaylistFetchWorker] = None
+        self._playlist_fetch_progress: Optional[QProgressDialog] = None
 
         self.news_feeds: Dict[str, Dict[str, Any]] = {}
         self.playlists: Dict[str, str] = {}
@@ -1844,11 +2320,17 @@ class NewsBoard(QMainWindow):
         self._apply_ui_density()
         self.load_news_feeds()
         self.load_playlists()
-        self.remove_all_videos()
+        self.remove_all_videos(confirm=False)
         self.load_state()
 
     def apply_theme(self):
         app = QApplication.instance()
+        if platform_name() == "Windows":
+            app.setFont(QFont("Segoe UI Variable Text", 10))
+        elif platform_name() == "macOS":
+            app.setFont(QFont(".SF NS Text", 10))
+        else:
+            app.setFont(QFont("Noto Sans", 10))
         if self.settings.theme == "dark":
             dark_palette = QPalette()
             dark_palette.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0))
@@ -1874,42 +2356,45 @@ class NewsBoard(QMainWindow):
     def _build_app_stylesheet(self, palette_name: str) -> str:
         if palette_name == "dark":
             colors = {
-                "window": "#111419",
-                "panel": "#171c23",
-                "panel_alt": "#1d2430",
-                "panel_soft": "#202836",
-                "input": "#111721",
-                "border": "#2a3342",
-                "border_strong": "#3a4659",
-                "text": "#f2f5f8",
-                "text_muted": "#9aa7b8",
-                "accent": "#2f8cff",
-                "accent_soft": "#173861",
-                "danger": "#a94747",
-                "hover": "rgba(255, 255, 255, 0.06)",
+                "window": "#0f1720",
+                "window_alt": "#162230",
+                "panel": "#15202d",
+                "panel_alt": "#1b2a39",
+                "panel_soft": "#213246",
+                "input": "#0f1a25",
+                "border": "#2a3d50",
+                "border_strong": "#40607a",
+                "text": "#eef4fb",
+                "text_muted": "#97adc2",
+                "accent": "#3da5ff",
+                "accent_soft": "#173856",
+                "danger": "#b85b5b",
+                "hover": "rgba(255, 255, 255, 0.08)",
             }
         else:
             colors = {
-                "window": "#eef3f8",
-                "panel": "#f7f9fc",
+                "window": "#edf4f8",
+                "window_alt": "#dbe9f2",
+                "panel": "#f8fbfe",
                 "panel_alt": "#ffffff",
-                "panel_soft": "#e8eef6",
+                "panel_soft": "#e3eef7",
                 "input": "#ffffff",
-                "border": "#ced8e4",
-                "border_strong": "#b5c3d3",
-                "text": "#14202b",
-                "text_muted": "#5e6f82",
-                "accent": "#0d6efd",
-                "accent_soft": "#d9e8ff",
-                "danger": "#c24b4b",
-                "hover": "rgba(13, 110, 253, 0.08)",
+                "border": "#c8d8e6",
+                "border_strong": "#a9bfd3",
+                "text": "#142433",
+                "text_muted": "#5f7488",
+                "accent": "#0077c8",
+                "accent_soft": "#d9edfb",
+                "danger": "#c95555",
+                "hover": "rgba(0, 119, 200, 0.08)",
             }
         return f"""
             QToolTip {{
                 color: {colors["text"]};
                 background-color: {colors["panel_alt"]};
                 border: 1px solid {colors["border_strong"]};
-                padding: 6px 8px;
+                padding: 8px 10px;
+                border-radius: 8px;
             }}
             QMainWindow, QWidget {{
                 color: {colors["text"]};
@@ -1918,16 +2403,20 @@ class NewsBoard(QMainWindow):
                 background: {colors["window"]};
             }}
             QWidget#gridHost {{
-                background: {colors["window"]};
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {colors["window"]},
+                    stop:1 {colors["window_alt"]}
+                );
             }}
             QLabel#gridEmptyState {{
                 color: {colors["text_muted"]};
-                font-size: 18px;
+                font-size: 20px;
                 font-weight: 600;
-                padding: 28px;
+                padding: 40px;
                 border: 1px dashed {colors["border_strong"]};
-                border-radius: 18px;
-                background: {colors["panel"]};
+                border-radius: 24px;
+                background: rgba(255, 255, 255, 0.03);
             }}
             QStatusBar {{
                 background: {colors["panel"]};
@@ -1935,18 +2424,19 @@ class NewsBoard(QMainWindow):
             }}
             QLabel#statusLabel {{
                 color: {colors["text_muted"]};
-                padding: 2px 6px;
+                padding: 4px 8px;
             }}
             QMenu {{
                 background-color: {colors["panel_alt"]};
                 color: {colors["text"]};
                 border: 1px solid {colors["border"]};
-                padding: 6px;
+                padding: 8px;
+                border-radius: 12px;
             }}
             QMenu::item {{
                 background-color: transparent;
-                padding: 7px 16px;
-                border-radius: 8px;
+                padding: 8px 16px;
+                border-radius: 10px;
             }}
             QMenu::item:selected {{
                 background-color: {colors["hover"]};
@@ -1975,28 +2465,31 @@ class NewsBoard(QMainWindow):
                 background: {colors["panel"]};
                 border: none;
                 border-bottom: 1px solid {colors["border"]};
-                padding: 10px 12px;
-                spacing: 8px;
+                padding: 12px 14px;
+                spacing: 10px;
             }}
             QWidget#toolbarGroup {{
-                background: {colors["panel_alt"]};
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {colors["panel_alt"]},
+                    stop:1 {colors["panel"]}
+                );
                 border: 1px solid {colors["border"]};
-                border-radius: 14px;
+                border-radius: 18px;
             }}
             QWidget#toolbarGroup QLabel#toolbarSectionLabel {{
                 color: {colors["text_muted"]};
                 font-size: 11px;
                 font-weight: 700;
                 letter-spacing: 0.08em;
-                text-transform: uppercase;
-                padding-right: 6px;
+                padding-bottom: 2px;
             }}
             QLineEdit, QComboBox, QListWidget, QTextEdit {{
                 background: {colors["input"]};
                 color: {colors["text"]};
                 border: 1px solid {colors["border"]};
-                border-radius: 10px;
-                padding: 7px 10px;
+                border-radius: 12px;
+                padding: 8px 10px;
                 selection-background-color: {colors["accent"]};
                 selection-color: #ffffff;
             }}
@@ -2004,8 +2497,9 @@ class NewsBoard(QMainWindow):
                 border: 1px solid {colors["accent"]};
             }}
             QLineEdit#urlInput {{
-                min-width: 280px;
-                padding: 9px 12px;
+                min-width: 320px;
+                min-height: 22px;
+                padding: 10px 12px;
             }}
             QComboBox::drop-down {{
                 border: none;
@@ -2021,11 +2515,12 @@ class NewsBoard(QMainWindow):
             QListWidget {{
                 outline: 0;
                 padding: 8px;
+                background: {colors["panel_alt"]};
             }}
             QListWidget::item {{
-                padding: 7px 8px;
-                border-radius: 8px;
-                margin: 1px 0px;
+                padding: 8px 10px;
+                border-radius: 10px;
+                margin: 2px 0px;
             }}
             QListWidget::item:selected {{
                 background: {colors["accent_soft"]};
@@ -2038,8 +2533,8 @@ class NewsBoard(QMainWindow):
                 background: {colors["panel_soft"]};
                 color: {colors["text"]};
                 border: 1px solid {colors["border"]};
-                border-radius: 10px;
-                padding: 8px 12px;
+                border-radius: 12px;
+                padding: 9px 13px;
                 min-height: 18px;
             }}
             QPushButton:hover {{
@@ -2081,9 +2576,13 @@ class NewsBoard(QMainWindow):
                 color: {colors["text"]};
             }}
             QDockWidget#listManager::title {{
-                background: {colors["panel"]};
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {colors["panel"]},
+                    stop:1 {colors["panel_alt"]}
+                );
                 text-align: left;
-                padding: 10px 12px;
+                padding: 12px 14px;
                 border-bottom: 1px solid {colors["border"]};
                 font-weight: 700;
             }}
@@ -2094,27 +2593,53 @@ class NewsBoard(QMainWindow):
             QTabBar::tab {{
                 background: transparent;
                 color: {colors["text_muted"]};
-                padding: 8px 12px;
+                padding: 9px 14px;
                 margin-right: 4px;
                 border-bottom: 2px solid transparent;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
             }}
             QTabBar::tab:selected {{
                 color: {colors["text"]};
+                background: {colors["panel_alt"]};
                 border-bottom-color: {colors["accent"]};
                 font-weight: 700;
             }}
             QWidget#listToolbar {{
                 background: {colors["panel_alt"]};
                 border: 1px solid {colors["border"]};
-                border-radius: 12px;
-                padding: 4px;
+                border-radius: 14px;
+                padding: 6px;
             }}
             QDialog {{
                 background: {colors["window"]};
             }}
+            QDialog#appDialog {{
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {colors["panel"]},
+                    stop:1 {colors["window"]}
+                );
+            }}
             QDialogButtonBox {{
                 border-top: 1px solid {colors["border"]};
-                padding-top: 12px;
+                padding-top: 14px;
+            }}
+            QScrollBar:vertical {{
+                width: 12px;
+                background: transparent;
+                margin: 4px 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {colors["border_strong"]};
+                border-radius: 6px;
+                min-height: 28px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent;
+                border: none;
+                height: 0px;
             }}
         """
 
@@ -2122,13 +2647,17 @@ class NewsBoard(QMainWindow):
     def _toolbar_group(title: str) -> tuple[QWidget, QHBoxLayout]:
         group = QWidget()
         group.setObjectName("toolbarGroup")
-        layout = QHBoxLayout(group)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(8)
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(6)
         label = QLabel(title)
         label.setObjectName("toolbarSectionLabel")
         layout.addWidget(label)
-        return group, layout
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        layout.addLayout(row)
+        return group, row
 
     def _apply_ui_density(self):
         scale = max(80, min(160, int(self.settings.ui_scale_percent)))
@@ -2362,6 +2891,7 @@ class NewsBoard(QMainWindow):
         self.settings.layout_mode = mode
         self.sm.save()
         self.update_grid()
+        self.schedule_state_save()
 
     def set_layout_mode(self, mode: str):
         if mode not in LAYOUT_MODES:
@@ -2377,6 +2907,7 @@ class NewsBoard(QMainWindow):
             return
         self.video_widgets[idx], self.video_widgets[new_idx] = self.video_widgets[new_idx], self.video_widgets[idx]
         self.update_grid()
+        self.schedule_state_save()
 
     def _scene_payload(self) -> Dict[str, Any]:
         return {
@@ -2427,6 +2958,7 @@ class NewsBoard(QMainWindow):
         matches = self.list_manager.scenes_list_widget.findItems(name, Qt.MatchFlag.MatchExactly)
         if matches:
             self.list_manager.scenes_list_widget.setCurrentItem(matches[0])
+        self.save_state()
         self.status_label.setText(tr("UI", f"Saved scene: {name}"))
 
     def delete_scene_prompt(self):
@@ -2443,6 +2975,7 @@ class NewsBoard(QMainWindow):
         if name in self.scenes:
             self.scenes.pop(name, None)
             self._refresh_scene_combo()
+            self.save_state()
             self.status_label.setText(tr("UI", f"Deleted scene: {name}"))
 
     def play_selected_scene_from_list(self):
@@ -2462,6 +2995,7 @@ class NewsBoard(QMainWindow):
             return
         self.scenes.pop(name, None)
         self._refresh_scene_combo()
+        self.save_state()
         self.status_label.setText(tr("UI", f"Deleted scene: {name}"))
 
     def apply_scene_by_name(self, name: str):
@@ -2469,10 +3003,14 @@ class NewsBoard(QMainWindow):
         if not name or name not in self.scenes:
             return
         scene = self.scenes[name]
-        self.settings.layout_mode = scene.get("layout_mode", self.settings.layout_mode)
+        if not isinstance(scene, dict):
+            return
+        layout_mode = str(scene.get("layout_mode", self.settings.layout_mode)).strip()
+        self.settings.layout_mode = layout_mode if layout_mode in LAYOUT_MODES else self.settings.layout_mode
         self.layout_combo.setCurrentText(self.settings.layout_mode)
-        self.settings.audio_policy = scene.get("audio_policy", self.settings.audio_policy)
-        self.active_volume = int(scene.get("active_volume", self.active_volume))
+        audio_policy = str(scene.get("audio_policy", self.settings.audio_policy)).strip().lower()
+        self.settings.audio_policy = audio_policy if audio_policy in ("single", "mixed") else self.settings.audio_policy
+        self.active_volume = coerce_int(scene.get("active_volume"), self.active_volume, 0, 100)
         self.volume_slider.setValue(self.active_volume)
 
         self._is_clearing = True
@@ -2512,14 +3050,6 @@ class NewsBoard(QMainWindow):
         if msgs:
             QMessageBox.information(self, APP_NAME, "\n".join(msgs))
 
-    def _fetch_text(self, url: str, timeout: int = 10) -> Optional[str]:
-        try:
-            r = requests.get(url, timeout=timeout)
-            r.raise_for_status()
-            return r.text
-        except requests.exceptions.RequestException:
-            return None
-
     def _enqueue_playlist_channels(self, m3u_text: str, choose: bool):
         channels = parse_m3u(m3u_text)
         if not channels:
@@ -2551,9 +3081,14 @@ class NewsBoard(QMainWindow):
             except Exception:
                 pass
         feeds: Dict[str, Dict[str, Any]] = {}
+        if isinstance(raw_feeds, dict) and isinstance(raw_feeds.get("feeds"), dict):
+            raw_feeds = raw_feeds["feeds"]
         if isinstance(raw_feeds, dict):
             for name, record in raw_feeds.items():
-                feeds[str(name)] = normalize_feed_record(record)
+                feed_name = str(name).strip()
+                normalized = normalize_feed_record(record)
+                if feed_name and normalized.get("url", "").strip():
+                    feeds[feed_name] = normalized
         self.news_feeds = feeds
         self._refresh_feeds_list()
 
@@ -2579,8 +3114,10 @@ class NewsBoard(QMainWindow):
         url_or_iframe = self.url_input.text().strip()
         if not url_or_iframe:
             return
-        m = re.search(r'<iframe.*?src="([^"]*)"', url_or_iframe, re.IGNORECASE)
-        url = m.group(1) if m else url_or_iframe
+        if not is_probable_media_url(url_or_iframe):
+            QMessageBox.warning(self, APP_NAME, tr("UI", "Enter a valid URL or iframe embed."))
+            return
+        url = normalize_input_url(url_or_iframe)
         self._enqueue(url, tr("UI", "Pasted Video"))
         self.url_input.clear()
 
@@ -2602,7 +3139,7 @@ class NewsBoard(QMainWindow):
                 self._enqueue(feed_record["url"], name, feed_record)
 
     def add_new_feed(self):
-        dialog = FeedDialog(self, show_profile=True)
+        dialog = FeedDialog(self, show_profile=True, existing_names=set(self.news_feeds.keys()))
         if dialog.exec():
             name, _url = dialog.get_feed_data()
             name = name.strip()
@@ -2619,7 +3156,15 @@ class NewsBoard(QMainWindow):
         item = selected[0]
         old_name = item.text()
         old_record = normalize_feed_record(item.data(Qt.ItemDataRole.UserRole))
-        dialog = FeedDialog(self, name=old_name, url=old_record.get("url", ""), profile=old_record, show_profile=True)
+        dialog = FeedDialog(
+            self,
+            name=old_name,
+            url=old_record.get("url", ""),
+            profile=old_record,
+            show_profile=True,
+            existing_names=set(self.news_feeds.keys()),
+            original_name=old_name,
+        )
         if dialog.exec():
             new_name, _new_url = dialog.get_feed_data()
             new_name = new_name.strip()
@@ -2672,9 +3217,16 @@ class NewsBoard(QMainWindow):
         _, playlists_file, _, _ = default_files()
         playlists_file.parent.mkdir(parents=True, exist_ok=True)
         try:
-            self.playlists = json.loads(playlists_file.read_text(encoding="utf-8"))
+            raw_playlists = json.loads(playlists_file.read_text(encoding="utf-8"))
         except Exception:
-            self.playlists = {}
+            raw_playlists = {}
+        if isinstance(raw_playlists, dict) and isinstance(raw_playlists.get("playlists"), dict):
+            raw_playlists = raw_playlists["playlists"]
+        self.playlists = {
+            str(name).strip(): str(url).strip()
+            for name, url in raw_playlists.items()
+            if str(name).strip() and str(url).strip()
+        } if isinstance(raw_playlists, dict) else {}
         self._refresh_playlists_list()
 
     def _refresh_playlists_list(self):
@@ -2696,13 +3248,13 @@ class NewsBoard(QMainWindow):
             pass
 
     def add_playlist_url(self):
-        dialog = FeedDialog(self, name="", url="", show_profile=False)
+        dialog = FeedDialog(self, name="", url="", show_profile=False, existing_names=set(self.playlists.keys()))
         dialog.setWindowTitle(tr("Playlist", "Add Playlist URL"))
         dialog.set_name_label(tr("Playlist", "Name"))
         if dialog.exec():
             name, url = dialog.get_feed_data()
             name = name.strip()
-            url = url.strip()
+            url = normalize_input_url(url)
             if name and url:
                 self.playlists[name] = url
                 self.save_playlists()
@@ -2759,35 +3311,101 @@ class NewsBoard(QMainWindow):
         selected = self.list_manager.playlists_list_widget.selectedItems()
         if not selected:
             return
-        playlist_url = selected[0].data(Qt.ItemDataRole.UserRole)
-        text = self._fetch_text(playlist_url)
-        if text is None:
-            QMessageBox.warning(self, "Error", "Could not fetch playlist.")
-            return
-        self._enqueue_playlist_channels(text, choose=True)
+        item = selected[0]
+        self._fetch_playlists_async([(item.text(), item.data(Qt.ItemDataRole.UserRole))], "choose")
 
     def add_all_playlist_channels(self):
         selected = self.list_manager.playlists_list_widget.selectedItems()
         if not selected:
             return
-        for item in selected:
-            playlist_url = item.data(Qt.ItemDataRole.UserRole)
-            text = self._fetch_text(playlist_url)
-            if text is None:
-                QMessageBox.warning(self, "Error", "Could not fetch playlist.")
-                continue
-            self._enqueue_playlist_channels(text, choose=False)
+        playlists = [(item.text(), item.data(Qt.ItemDataRole.UserRole)) for item in selected]
+        self._fetch_playlists_async(playlists, "all")
 
     def view_playlist_channels(self):
         selected = self.list_manager.playlists_list_widget.selectedItems()
         if not selected:
             return
-        playlist_url = selected[0].data(Qt.ItemDataRole.UserRole)
-        text = self._fetch_text(playlist_url)
-        if text is None:
-            QMessageBox.warning(self, "Error", "Could not fetch playlist.")
+        item = selected[0]
+        self._fetch_playlists_async([(item.text(), item.data(Qt.ItemDataRole.UserRole))], "view")
+
+    def _fetch_playlists_async(self, playlists: list[Tuple[str, str]], mode: str) -> None:
+        if self._playlist_fetch_worker is not None:
+            QMessageBox.information(self, APP_NAME, tr("Playlist", "A playlist fetch is already running."))
             return
-        self._enqueue_playlist_channels(text, choose=True)
+        clean_playlists = [(name, url) for name, url in playlists if is_probable_media_url(str(url))]
+        if not clean_playlists:
+            QMessageBox.warning(self, APP_NAME, tr("Playlist", "Select a valid playlist URL."))
+            return
+
+        progress = QProgressDialog(
+            tr("Playlist", "Fetching playlist..."),
+            tr("Playlist", "Cancel"),
+            0,
+            0,
+            self,
+        )
+        progress.setWindowTitle(tr("Playlist", "Loading"))
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(250)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+
+        worker = PlaylistFetchWorker(clean_playlists, parent=self)
+        self._playlist_fetch_worker = worker
+        self._playlist_fetch_progress = progress
+        progress.canceled.connect(worker.cancel)
+        worker.finished.connect(lambda results, cancelled, m=mode: self._on_playlists_fetched(results, cancelled, m))
+        worker.start()
+        progress.show()
+        self.status_label.setText(tr("Playlist", "Fetching playlist..."))
+
+    def _on_playlists_fetched(self, results: list[Dict[str, Any]], cancelled: bool, mode: str) -> None:
+        if self._playlist_fetch_progress is not None:
+            self._playlist_fetch_progress.close()
+            self._playlist_fetch_progress.deleteLater()
+        self._playlist_fetch_progress = None
+        self._playlist_fetch_worker = None
+
+        if cancelled:
+            self.status_label.setText(tr("Playlist", "Playlist fetch canceled"))
+            return
+
+        successful = [item for item in results if item.get("text")]
+        if not successful:
+            QMessageBox.warning(self, APP_NAME, tr("Playlist", "Could not fetch playlist."))
+            self.status_label.setText(tr("Playlist", "Playlist fetch failed"))
+            return
+
+        if mode in ("choose", "view"):
+            first = successful[0]
+            channels = parse_m3u(first["text"])
+            if not channels:
+                QMessageBox.information(self, APP_NAME, tr("Playlist", "No channels found in this playlist"))
+                return
+            dialog = PlaylistViewerDialog(self, channels)
+            if mode == "view":
+                dialog.setWindowTitle(tr("Playlist", "Playlist Channels"))
+                dialog.exec()
+                self.status_label.setText(tr("Playlist", f"Loaded {len(channels)} channels"))
+                return
+            if dialog.exec():
+                for name, url in dialog.get_selected_channels():
+                    self._enqueue(url, name)
+                self.status_label.setText(tr("Playlist", "Selected channels added"))
+            return
+
+        total_added = 0
+        failed_count = len(results) - len(successful)
+        for item in successful:
+            channels = parse_m3u(item["text"])
+            for name, url in channels:
+                self._enqueue(url, name)
+            total_added += len(channels)
+        if failed_count:
+            self.status_label.setText(
+                tr("Playlist", f"Added {total_added} channels; {failed_count} playlist(s) failed"))
+        else:
+            self.status_label.setText(tr("Playlist", f"Added {total_added} channels"))
 
     def remove_playlist(self):
         selected = self.list_manager.playlists_list_widget.selectedItems()
@@ -2872,6 +3490,7 @@ class NewsBoard(QMainWindow):
             self.update_grid()
         if enforce_audio:
             self._enforce_audio_policy_with_retries()
+        self.schedule_state_save()
 
     def remove_video_from_grid_list(self):
         items = self.list_manager.grid_list_widget.selectedItems()
@@ -2926,20 +3545,22 @@ class NewsBoard(QMainWindow):
                 self.focused_tile = self.video_widgets[0]
             self.update_grid()
             self._enforce_audio_policy_with_retries()
+            self.schedule_state_save()
 
-    def remove_all_videos(self):
+    def remove_all_videos(self, confirm: bool = True):
         if not self.video_widgets:
             return
 
-        reply = QMessageBox.question(
-            self,
-            tr("UI", "Confirm Remove All"),
-            tr("UI", "Are you sure you want to remove all videos from the grid?"),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.No:
-            return
+        if confirm:
+            reply = QMessageBox.question(
+                self,
+                tr("UI", "Confirm Remove All"),
+                tr("UI", "Are you sure you want to remove all videos from the grid?"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
 
         if self.isFullScreen():
             self.exit_fullscreen()
@@ -2996,6 +3617,7 @@ class NewsBoard(QMainWindow):
         self._audio_retry_remaining = 0
 
         QTimer.singleShot(0, lambda: setattr(self, "_is_clearing", False))
+        QTimer.singleShot(0, self.schedule_state_save)
 
     def _grid_signature(self, active_widgets: list[QtTile], mode: str) -> Tuple[Any, ...]:
         return mode, tuple(id(w) for w in active_widgets)
@@ -3018,6 +3640,82 @@ class NewsBoard(QMainWindow):
         finally:
             w.setUpdatesEnabled(True)
         self._grid_list_signature = signature
+
+    def _record_failed_stream(self, tile: QtTile) -> None:
+        entry = {
+            "title": tile.title,
+            "url": tile.url,
+            "error": tile.last_error or tile.health_state,
+            "seen_at": datetime.now().strftime("%H:%M:%S"),
+        }
+        self.failed_streams = [item for item in self.failed_streams if item.get("url") != tile.url]
+        self.failed_streams.insert(0, entry)
+        self.failed_streams = self.failed_streams[:50]
+        self._refresh_failed_streams_list()
+
+    def _refresh_failed_streams_list(self) -> None:
+        if not hasattr(self.list_manager, "failed_streams_list_widget"):
+            return
+        w = self.list_manager.failed_streams_list_widget
+        w.setUpdatesEnabled(False)
+        try:
+            w.clear()
+            for entry in self.failed_streams:
+                title = entry.get("title", tr("List", "Untitled"))
+                error = entry.get("error", "")
+                seen_at = entry.get("seen_at", "")
+                label = f"{title}  {seen_at}"
+                if error:
+                    label = f"{label}  {error}"
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, entry)
+                w.addItem(item)
+        finally:
+            w.setUpdatesEnabled(True)
+
+    def _tile_for_url(self, url: str) -> Optional[QtTile]:
+        for tile in self.video_widgets:
+            if tile.url == url:
+                return tile
+        return None
+
+    def reload_selected_failed_streams(self):
+        selected = self.list_manager.failed_streams_list_widget.selectedItems()
+        if not selected:
+            return
+        for item in selected:
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            url = entry.get("url", "") if isinstance(entry, dict) else ""
+            title = entry.get("title", tr("UI", "Recovered stream")) if isinstance(entry, dict) else tr("UI",
+                                                                                                        "Recovered stream")
+            tile = self._tile_for_url(url)
+            if tile is not None:
+                tile.safe_reload()
+            elif url:
+                self._enqueue(url, title)
+        self.status_label.setText(tr("List", "Reloading failed stream(s)"))
+
+    def remove_selected_failed_streams(self):
+        selected = self.list_manager.failed_streams_list_widget.selectedItems()
+        if not selected:
+            return
+        urls = set()
+        for item in selected:
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(entry, dict) and entry.get("url"):
+                urls.add(entry["url"])
+        for url in urls:
+            tile = self._tile_for_url(url)
+            if tile is not None:
+                self.remove_video_widget(tile)
+        self.failed_streams = [entry for entry in self.failed_streams if entry.get("url") not in urls]
+        self._refresh_failed_streams_list()
+        self.status_label.setText(tr("List", "Removed failed stream(s)"))
+
+    def clear_failed_streams(self):
+        self.failed_streams.clear()
+        self._refresh_failed_streams_list()
+        self.status_label.setText(tr("List", "Failed streams cleared"))
 
     def update_grid(self, force: bool = False):
         active_widgets = [w for w in self.video_widgets if w not in self.pip_windows]
@@ -3106,8 +3804,7 @@ class NewsBoard(QMainWindow):
         if self._is_clearing:
             return
         self.focused_tile = video_widget
-        pref_vol = int(video_widget.feed_profile.get("preferred_volume", self.active_volume))
-        self.active_volume = max(0, min(100, pref_vol))
+        self.active_volume = coerce_int(video_widget.feed_profile.get("preferred_volume"), self.active_volume, 0, 100)
         self.volume_slider.blockSignals(True)
         self.volume_slider.setValue(self.active_volume)
         self.volume_label.setText(tr("UI", f"Volume {self.active_volume}"))
@@ -3139,10 +3836,12 @@ class NewsBoard(QMainWindow):
             self.status_label.setText(tr("UI", f"Active: {new_title}"))
         self._grid_list_signature = None
         self._sync_grid_list()
+        self.schedule_state_save()
 
     def on_tile_health_changed(self, tile: QtTile):
         if tile.health_state == "error":
             self.logger.warning("Tile error: %s (%s)", tile.title, tile.last_error)
+            self._record_failed_stream(tile)
         tile.set_overlay_visibility(self.settings.show_operational_overlays)
 
     def _run_watchdog(self):
@@ -3263,6 +3962,7 @@ class NewsBoard(QMainWindow):
         self.active_volume = int(value)
         self.volume_label.setText(tr("UI", f"Volume {self.active_volume}"))
         self._enforce_audio_policy_with_retries()
+        self.schedule_state_save()
 
     def toggle_fullscreen_tile(self, tile: QtTile):
         if self.isFullScreen():
@@ -3368,6 +4068,7 @@ class NewsBoard(QMainWindow):
             pip_window = PipWindow(tile, self)
             self.pip_windows[tile] = pip_window
             self.update_grid()
+        self.schedule_state_save()
 
     def reattach_tile(self, tile: QtTile):
         if tile in self.pip_windows:
@@ -3375,6 +4076,7 @@ class NewsBoard(QMainWindow):
         tile.setParent(self.central_widget_container)
         tile.show()
         self.update_grid()
+        self.schedule_state_save()
 
     def reorder_video_widgets(self, *_):
         new_order_widgets = []
@@ -3389,6 +4091,7 @@ class NewsBoard(QMainWindow):
         self.video_widgets = new_order_widgets + pip_widgets
         self._grid_list_signature = None
         self.update_grid()
+        self.schedule_state_save()
 
     def reorder_video_widget_pair(self, source: QtTile, target: QtTile):
         if source not in self.video_widgets or target not in self.video_widgets or source is target:
@@ -3400,10 +4103,18 @@ class NewsBoard(QMainWindow):
         self.focused_tile = widget
         self.update_grid()
         self._update_active_tile_styles()
+        self.schedule_state_save()
 
     def reload_all_videos(self):
         for widget in self.video_widgets:
             widget.safe_reload()
+
+    def schedule_state_save(self):
+        if self._is_clearing:
+            return
+        if hasattr(self, "_state_save_timer"):
+            self.save_status_label.setText(tr("UI", "Saving..."))
+            self._state_save_timer.start()
 
     def save_state(self):
         _, _, state_file, _ = default_files()
@@ -3418,8 +4129,9 @@ class NewsBoard(QMainWindow):
         }
         try:
             state_file.write_text(json.dumps(state, indent=4), encoding="utf-8")
+            self.save_status_label.setText(tr("UI", f"Saved {datetime.now().strftime('%I:%M %p').lstrip('0')}"))
         except Exception:
-            pass
+            self.save_status_label.setText(tr("UI", "Save failed"))
 
     def load_state(self):
         _, _, state_file, _ = default_files()
@@ -3430,7 +4142,7 @@ class NewsBoard(QMainWindow):
 
         try:
             state = json.loads(state_file.read_text(encoding="utf-8"))
-            self.active_volume = int(state.get("active_volume", self.settings.volume_default))
+            self.active_volume = coerce_int(state.get("active_volume"), self.settings.volume_default, 0, 100)
 
             geometry_b64 = state.get("geometry")
             if geometry_b64:
@@ -3458,6 +4170,10 @@ class NewsBoard(QMainWindow):
         self._is_clearing = True
         try:
             self._queue_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._state_save_timer.stop()
         except Exception:
             pass
         try:

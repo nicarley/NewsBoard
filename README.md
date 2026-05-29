@@ -42,11 +42,12 @@ NewsBoard is a desktop multiview app for monitoring live video streams from mult
 - [PyQt6](https://pypi.org/project/PyQt6/)
 - [requests](https://pypi.org/project/requests/)
 - [yt-dlp](https://pypi.org/project/yt-dlp/) (optional, enables YouTube direct resolution)
+- [PyQt6-WebEngine](https://pypi.org/project/PyQt6-WebEngine/) (optional, enables embedded YouTube playback/fallback)
 
 Install dependencies:
 
 ```bash
-pip install PyQt6 requests yt-dlp
+pip install PyQt6 PyQt6-WebEngine requests yt-dlp
 ```
 
 ## Run
@@ -76,4 +77,5 @@ python main.py
 
 - App data (settings, feeds, playlists, state, logs) is stored in your platform app-data directory.
 - On Linux, full stream support may require GStreamer multimedia packages.
+- Installing `PyQt6-WebEngine` is recommended for YouTube playback because the app can fall back to an embedded browser player when Qt rejects a direct stream.
 - Third-party streams and embeds remain subject to each provider's terms.
